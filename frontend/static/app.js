@@ -312,7 +312,6 @@ function fillSettingsForm() {
   if (byId('settingCosRegion')) byId('settingCosRegion').value = settingValue('cos_region') || '';
   if (byId('settingCosBucket')) byId('settingCosBucket').value = settingValue('cos_bucket') || '';
   if (byId('settingCosPrefix')) byId('settingCosPrefix').value = settingValue('cos_prefix') || '';
-  if (byId('settingEnableRealRpa')) byId('settingEnableRealRpa').value = settingValue('enable_real_rpa') || 'false';
   if (byId('settingExecutorMode')) byId('settingExecutorMode').value = settingValue('executor_mode') || 'local_python';
   if (byId('settingExecutorServerUrl')) byId('settingExecutorServerUrl').value = settingValue('executor_server_url') || window.location.origin;
   if (byId('settingExecutorBindCode')) byId('settingExecutorBindCode').value = settingValue('executor_bind_code') || '';
@@ -411,7 +410,6 @@ async function saveSettings(options = {}) {
     { key: 'cos_region', value: byId('settingCosRegion')?.value || '' },
     { key: 'cos_bucket', value: byId('settingCosBucket')?.value || '' },
     { key: 'cos_prefix', value: byId('settingCosPrefix')?.value || '' },
-    { key: 'enable_real_rpa', value: byId('settingEnableRealRpa')?.value || 'false' },
     { key: 'executor_mode', value: byId('settingExecutorMode')?.value || 'local_python' },
     { key: 'executor_server_url', value: byId('settingExecutorServerUrl')?.value || window.location.origin },
     { key: 'executor_bind_code', value: byId('settingExecutorBindCode')?.value || '' },
@@ -475,7 +473,7 @@ async function loadSystemStatus() {
       <div class="table-wrap" style="margin-bottom:16px;"><table style="min-width:720px;"><thead><tr><th>检查项</th><th>状态</th><th>建议</th></tr></thead><tbody>${checklist}</tbody></table></div>
       <div><b>数据库：</b>${status.database_exists ? '✅' : '⚠️'} ${status.database}</div>
       <div><b>图片目录：</b>${status.image_dir_exists ? '✅' : '⚠️'} ${status.image_dir}</div>
-      <div><b>真实 RPA：</b><span class="badge ${status.enable_real_rpa === 'true' ? 'orange' : 'green'}">${status.enable_real_rpa === 'true' ? '已开启' : '安全关闭'}</span></div>
+      <div><b>真实 RPA：</b><span class="badge green">点击正式上货直接执行</span></div>
       <div><b>外部采集执行：</b><span class="badge ${status.enable_external_collection === 'true' ? 'orange' : 'green'}">${status.enable_external_collection === 'true' ? '已开启' : '安全关闭'}</span></div>
       <div><b>默认采集模式：</b>${status.collection_mode}</div>
       <div><b>店小秘脚本目录：</b>${status.script_dir_exists ? '✅' : '⚠️'} ${status.script_dir}</div>

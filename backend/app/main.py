@@ -2892,7 +2892,7 @@ def system_status() -> dict[str, object]:
     checklist = [
         {"key": "database", "label": "本地数据库", "ok": DB_PATH.exists(), "action": "无需处理" if DB_PATH.exists() else "启动应用会自动创建数据库"},
         {"key": "image_dir", "label": "图片目录", "ok": IMAGE_DIR.exists(), "action": "无需处理" if IMAGE_DIR.exists() else "创建 data/images 目录"},
-        {"key": "safe_rpa", "label": "真实 RPA 安全", "ok": get_setting_value("enable_real_rpa", "false") != "true", "action": "默认关闭，安全" if get_setting_value("enable_real_rpa", "false") != "true" else "确认要真实上货后再保持开启"},
+        {"key": "real_rpa", "label": "真实 RPA", "ok": True, "action": "点击正式上货直接执行"},
         {"key": "safe_collection", "label": "外部采集安全", "ok": get_setting_value("enable_external_collection", "false") != "true", "action": "默认关闭，安全" if get_setting_value("enable_external_collection", "false") != "true" else "确认要执行外部采集后再保持开启"},
         {"key": "upload_preflight", "label": "上货预检", "ok": bool(upload["ready"]), "action": "脚本和图片目录就绪" if upload["ready"] else "检查店小秘脚本目录和图片目录"},
         {"key": "executor", "label": "本地执行器", "ok": bool(get_setting_value("executor_mode", "local_python")), "action": f"模式：{get_setting_value('executor_mode', 'local_python')}，版本：{get_setting_value('executor_version', '0.1.0')}"},
@@ -2904,7 +2904,7 @@ def system_status() -> dict[str, object]:
         "database_exists": DB_PATH.exists(),
         "image_dir": str(IMAGE_DIR),
         "image_dir_exists": IMAGE_DIR.exists(),
-        "enable_real_rpa": get_setting_value("enable_real_rpa", "false"),
+        "enable_real_rpa": "true",
         "enable_external_collection": get_setting_value("enable_external_collection", "false"),
         "collection_mode": get_setting_value("collection_mode", "1688"),
         "executor": {
@@ -3953,16 +3953,12 @@ def run_upload_task() -> UploadTask:
     diagnostics = upload_item_diagnostics(items)
     blocked_items = [item for item in diagnostics if not item["ready"]]
     timestamp = now_text()
-    real_enabled = get_setting_value("enable_real_rpa", "false").lower() == "true"
     script_dir = configured_script_dir()
     command = upload_rpa_command(export["path"])
     status = "blocked"
     run_log = ""
     stdout_text = ""
-    if not real_enabled:
-        status = "blocked"
-        run_log = "Real RPA blocked: enable_real_rpa is false in settings."
-    elif blocked_items:
+    if blocked_items:
         status = "needs_review"
         run_log = f"Real RPA blocked: {len(blocked_items)} products need review. SKC: {', '.join(str(item['skc']) for item in blocked_items)}"
     elif not preflight["ready"]:

@@ -207,9 +207,12 @@ def main_smoke() -> None:
     assert_true(upload_task.total_count >= 1, 'upload task has no items')
     assert_true(upload_task.failed_count == 0, f'upload task has failed items: {upload_task.failed_count}')
 
+    main.save_settings([main.AppSetting(key='rpa_script_dir', value=str(ROOT / 'missing-rpa-script-dir'))])
     real_task = main.run_upload_task()
-    assert_true(real_task.status == 'blocked', 'formal upload should be blocked by default safety switch')
-    assert_true('enable_real_rpa is false' in real_task.run_log, 'formal upload did not record safety block reason')
+    assert_true(real_task.status in {'needs_review', 'rpa_failed'}, 'formal upload should pass removed safety switch and fail only on preflight/runtime')
+    assert_true('enable_real_rpa is false' not in real_task.run_log, 'formal upload still blocked by removed safety switch')
+    restore_script_dir = previous_settings.get('rpa_script_dir')
+    main.save_settings([main.AppSetting(key='rpa_script_dir', value=restore_script_dir or '')])
 
     status_result = main.update_products_status(main.ProductBulkStatusPayload(ids=[product.id], status='待处理'))
     assert_true(status_result['updated_count'] == 1, 'bulk product status update failed')
