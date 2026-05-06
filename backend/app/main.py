@@ -1754,52 +1754,6 @@ def init_db() -> None:
             )
             """
         )
-        count = db.execute("SELECT COUNT(*) AS total FROM products").fetchone()["total"]
-        if count == 0:
-            seed_products = [
-                ProductPayload(
-                    title="\u5973\u58eb\u725b\u4ed4\u77ed\u88e4",
-                    skc="DS260427001",
-                    sku_summary="6\u8272 \u00d7 6\u7801",
-                    purchase_price=28.8,
-                    first_mile=28.0,
-                    platform_cost=6.5,
-                    status="\u5229\u6da6\u6b63\u5e38",
-                ),
-                ProductPayload(
-                    title="\u9ad8\u8170\u4f11\u95f2\u77ed\u88e4",
-                    skc="DS260427002",
-                    sku_summary="4\u8272 \u00d7 5\u7801",
-                    purchase_price=25.0,
-                    first_mile=28.0,
-                    platform_cost=6.2,
-                    status="\u5f85\u8865\u4e3b\u56fe",
-                ),
-            ]
-            for item in seed_products:
-                total_cost, estimated_profit, gross_margin = recalc(item)
-                db.execute(
-                    """
-                    INSERT INTO products (
-                        title, skc, sku_summary, purchase_price, first_mile, platform_cost,
-                        total_cost, estimated_profit, gross_margin, status, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        item.title,
-                        item.skc,
-                        item.sku_summary,
-                        item.purchase_price,
-                        item.first_mile,
-                        item.platform_cost,
-                        total_cost,
-                        estimated_profit,
-                        gross_margin,
-                        item.status,
-                        now_text(),
-                        now_text(),
-                    ),
-                )
         upload_columns = [row[1] for row in db.execute("PRAGMA table_info(upload_tasks)").fetchall()]
         if "run_log" not in upload_columns:
             db.execute("ALTER TABLE upload_tasks ADD COLUMN run_log TEXT NOT NULL DEFAULT ''")
