@@ -38,10 +38,11 @@ setlocal
 set UPLOAD_ASSISTANT_HOST=127.0.0.1
 set UPLOAD_ASSISTANT_PORT=8000
 set UPLOAD_ASSISTANT_OPEN_BROWSER=true
+set UPLOAD_ASSISTANT_BROWSER_URL=http://124.156.175.191
 ""%~dp0upload-assistant-backend.exe""
 pause
 "@
-Set-Content -LiteralPath (Join-Path $DistDir '启动上货助手后台.bat') -Value $Launcher -Encoding ASCII
+Set-Content -LiteralPath (Join-Path $DistDir '启动上货助手后台.bat') -Value $Launcher -Encoding UTF8
 
 Write-Host "打包完成：$DistDir" -ForegroundColor Green
 Write-Host "启动：$DistDir\启动上货助手后台.bat" -ForegroundColor Green
