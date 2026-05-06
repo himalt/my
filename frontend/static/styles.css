@@ -168,6 +168,7 @@ th { background: #fafafa; color: #4b5563; font-weight: 900; }
 .dialog { width: min(760px, 100%); background: #fff; border-radius: 22px; padding: 22px; box-shadow: 0 24px 80px rgba(15,23,42,.28); }
 .app-dialog { width: min(520px, 100%); }
 .app-dialog-message { color: #374151; line-height: 1.7; white-space: pre-wrap; }
+.app-dialog-progress-text { min-height: 72px; display: flex; align-items: center; justify-content: center; text-align: center; font-size: 18px; font-weight: 900; color: #1d4ed8; }
 .progress-track { height: 12px; background: #eef2ff; border-radius: 999px; overflow: hidden; margin-bottom: 14px; border: 1px solid #dbeafe; }
 .progress-bar { height: 100%; background: linear-gradient(90deg, #2563eb, #7c3aed); border-radius: inherit; transition: width .25s ease; }
 .progress-table-wrap { max-height: 260px; border: 1px solid #f3f4f6; border-radius: 14px; }
