@@ -47,6 +47,7 @@ DB_PATH = Path(os.environ.get("UPLOAD_ASSISTANT_DB", DATA_DIR / "app.db"))
 FRONTEND_DIR = RESOURCE_DIR / "frontend"
 STATIC_DIR = FRONTEND_DIR / "static"
 RELEASE_DIR = BASE_DIR / "release"
+WINDOWS_APP_COS_URL = "https://temutp423-1320875862.cos.ap-beijing.myqcloud.com/temu/release/upload-assistant-windows.zip"
 SCRIPT_SOURCE_DIR = Path(r"C:\Users\zyf\.accio\accounts\1753260534\agents\MID-27260534U1775454-06F6F0-2183-EB2CBD\project")
 NANOBANANA_SUBMIT_URL = "https://api.wuyinkeji.com/api/async/image_nanoBanana2"
 NANOBANANA_DETAIL_URL = "https://api.wuyinkeji.com/api/async/detail"
@@ -2949,7 +2950,8 @@ def list_downloads() -> dict[str, object]:
             "available": target.exists(),
             "filename": target.name,
             "size": target.stat().st_size if target.exists() else 0,
-            "download_url": "/api/downloads/windows-app" if target.exists() else "",
+            "download_url": WINDOWS_APP_COS_URL,
+            "fallback_url": "/api/downloads/windows-app" if target.exists() else "",
         }
     }
 
