@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>上货助手</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20260506-7" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><div class="logo">上</div><div><div class="brand-title">上货助手</div><div class="brand-sub">本地商品工作台</div></div></div>
+      <div class="nav-group">商品中心</div>
+      <button class="nav-item" data-page="new">🔎 商品采集</button>
+      <button class="nav-item" data-page="collect-results">📊 采集结果</button>
+      <button class="nav-item" data-page="import">📋 商品处理</button>
+      <div class="nav-group">上货中心</div>
+      <button class="nav-item" data-page="tasks">🚚 上货任务</button>
+      <button class="nav-item" data-page="records">📝 发布记录</button>
+      <div class="nav-group">利润管理</div>
+      <button class="nav-item active" data-page="products">📦 商品库</button>
+      <div class="nav-group">配置中心</div>
+      <button class="nav-item" data-page="images">💬 提示词管理</button>
+      <button class="nav-item" data-page="api">🔑 API 管理</button>
+      <button class="nav-item" data-page="settings">⚙️ 设置中心</button>
+    </aside>
+
+    <main class="main">
+      <section class="page active-page" id="products">
+        <div class="page-head">
+          <div><h1>商品库</h1><div class="desc">网页内建商品工作台，商品库每个商品只保留一张主图</div></div>
+          <div class="actions"><input id="searchInput" class="input search" placeholder="按标题/SKC/SKU 搜索..."/><select id="productStatusFilter" class="select"><option value="">全部状态</option><option value="待处理">待处理</option><option value="利润正常">利润正常</option><option value="待补主图">待补主图</option><option value="pending_main_image">待补主图(旧)</option></select><select id="productImageFilter" class="select"><option value="">全部图片</option><option value="has">已有主图</option><option value="missing">缺主图</option></select><button id="searchButton" class="btn primary">搜索</button></div>
+        </div>
+        <div class="actions toolbar">
+          <button id="newProductButton" class="btn primary">＋ 新增商品</button>
+          <select id="bulkProductStatus" class="select"><option value="利润正常">利润正常</option><option value="待补主图">待补主图</option><option value="待处理">待处理</option></select>
+          <button id="bulkProductStatusButton" class="btn ghost">批量改状态</button>
+          <button id="bulkProductDeleteButton" class="btn outline-orange">批量删除</button>
+          <button id="refreshButton" class="btn outline-blue">刷新</button>
+        </div>
+        <div id="dashboardCards" class="metric-grid"></div>
+        <div class="card">
+          <div class="card-head"><div class="card-title">成本利润表</div><span class="badge blue">按商品汇总</span></div>
+          <div class="card-body table-wrap">
+            <table>
+              <thead><tr><th><input id="selectAllProducts" type="checkbox" /></th><th>商品</th><th>SKC</th><th>SKU</th><th>商品库图片</th><th>采购价</th><th>头程</th><th>平台成本</th><th>总成本</th><th>预计利润</th><th>毛利率</th><th>状态</th><th>操作</th></tr></thead>
+              <tbody id="productsBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="new">
+        <div class="page-head">
+          <div>
+            <h1>商品采集</h1>
+            <div class="desc">按关键词启动真实采集任务，进度在下方采集执行日志里查看</div>
+          </div>
+          <div class="actions"><button id="startCollectionTaskButton" class="btn primary">开始采集</button></div>
+        </div>
+        <div class="task-layout">
+          <div class="card">
+            <div class="card-head"><div class="card-title">采集配置</div><span class="badge blue">真实采集</span></div>
+            <div class="card-body form-grid">
+              <label>关键词<input id="collectionKeyword" class="input" placeholder="例如：牛仔短裤" value="女士牛仔短裤" /></label>
+              <label>来源<select id="collectionSource" class="select"><option value="1688">1688</option><option value="Temu">Temu</option><option value="Amazon">Amazon</option></select></label>
+              <label>采集方式<select id="collectionMode" class="select"><option value="1688">1688 商品采集</option></select></label>
+              <label>目标数量<input id="collectionTargetCount" class="input" type="number" value="8" min="1" max="50" /></label>
+              <label>最低价<input id="collectionMinPrice" class="input" type="number" step="0.01" value="20" /></label>
+              <label>最高价<input id="collectionMaxPrice" class="input" type="number" step="0.01" value="60" /></label>
+              <label>黑名单<input id="collectionBlacklist" class="input" placeholder="多个词用逗号分隔，如：破损,二手" /></label>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><div class="card-title">采集执行日志</div><span class="badge blue">进度输出</span></div>
+            <div class="card-body"><div id="collectionProgressBody" class="chat-log"><div class="chat-empty">暂无采集日志</div></div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><div class="card-title">采集任务</div><div class="actions"><span class="badge blue">任务队列</span><button id="clearCollectionTasksButton" class="btn outline-orange">清空历史记录</button></div></div>
+          <div class="card-body table-wrap">
+            <table>
+              <thead><tr><th>任务ID</th><th>关键词</th><th>来源</th><th>状态</th><th>目标</th><th>采集数</th><th>结果数</th><th>入库</th><th>跳过</th><th>失败</th><th>时间</th><th>重试</th></tr></thead>
+              <tbody id="collectionTasksBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="collect-results">
+        <div class="page-head">
+          <div>
+            <h1>采集结果</h1>
+            <div class="desc">查看、筛选和处理已采集到的候选商品</div>
+          </div>
+          <div class="actions">
+            <button id="downloadCollectionTemplateButton" class="btn outline-blue">下载模板</button>
+            <input id="collectionFileInput" type="file" accept=".csv,.xlsx,.xlsm,.json" style="display:none" />
+            <select id="collectionFileSource" class="select"><option value="文件导入">文件导入</option><option value="1688">1688</option><option value="Temu">Temu</option></select>
+            <button id="importCollectionFileButton" class="btn ghost">导入文件</button>
+            <button id="deleteSelectedCollectionButton" class="btn outline-orange">批量删除</button>
+            <button id="importSelectedButton" class="btn primary">加入商品库</button>
+          </div>
+        </div>
+        <div class="filters">
+          <input id="collectionSearchInput" class="input search" placeholder="搜索标题/来源..." />
+          <select id="collectionStatusFilter" class="select"><option value="">全部状态</option><option value="pending">待处理</option><option value="imported">已入库</option><option value="skipped">已跳过</option></select>
+          <select id="collectionSourceFilter" class="select"><option value="">全部来源</option><option value="1688">1688</option><option value="Temu">Temu</option><option value="文件导入">文件导入</option></select>
+          <input id="collectionMinPriceFilter" class="input" type="number" step="0.01" placeholder="最低价" />
+          <input id="collectionMaxPriceFilter" class="input" type="number" step="0.01" placeholder="最高价" />
+          <select id="collectionSortFilter" class="select"><option value="newest">最新</option><option value="sales_desc">销量从高到低</option><option value="price_asc">价格从低到高</option><option value="price_desc">价格从高到低</option></select>
+          <button id="applyCollectionFiltersButton" class="btn outline-blue">筛选</button>
+        </div>
+        <div class="card">
+          <div class="card-head"><div class="card-title">候选商品</div><span class="badge blue">采集池</span></div>
+          <div class="card-body table-wrap">
+            <table>
+              <thead><tr><th><input id="selectAllCollection" type="checkbox" /></th><th>主图</th><th>标题</th><th>来源</th><th>价格</th><th>销量</th><th>状态</th><th>操作</th></tr></thead>
+              <tbody id="collectionBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="import">
+        <div class="page-head">
+          <div><h1>商品处理</h1><div class="desc">对采集或商品库数据做补图、标题、成本和导出处理</div></div>
+          <div class="actions">
+            <label class="inline-check"><input id="selectAllProcessing" type="checkbox" /> 全选</label>
+            <select id="processingStatusFilter" class="select"><option value="">全部</option><option value="ready_to_export">可导出</option><option value="needs_image">需补图</option></select>
+            <select id="processingBatchAction" class="select">
+              <option value="edit_fields">批量编辑字段</option>
+              <option value="generate_titles">批量处理商品标题</option>
+              <option value="dedupe_images">批量图片去重</option>
+              <option value="delete">批量删除</option>
+            </select>
+            <button id="runProcessingBatchActionButton" class="btn outline-blue">执行批量操作</button>
+            <button id="refreshProcessingButton" class="btn outline-blue">刷新</button>
+            <button id="exportMiaoshouButton" class="btn primary">导出店小秘表</button>
+          </div>
+        </div>
+        <div class="processing-workbench">
+          <div class="card processing-list-card">
+            <div class="card-head"><div class="card-title">处理队列</div><span class="badge blue">商品数据</span></div>
+            <div id="processingBody" class="processing-list"></div>
+          </div>
+          <div class="card processing-detail-card">
+            <div class="card-head"><div class="card-title">处理详情</div><span id="processingDetailStatus" class="badge orange">待处理</span></div>
+            <div id="processingDetailPanel" class="card-body"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="tasks">
+        <div class="page-head">
+          <div><h1>TEMU 上品任务</h1><div class="desc">按当前配置做上货预检、导出正式表格，并调用正式 RPA（受安全开关保护）</div></div>
+          <div class="actions"><button id="preflightButton" class="btn outline-blue">上货预检</button><button id="clearUploadTasksButton" class="btn outline-orange">清空任务</button><button id="saveUploadOperationSettingsButton" class="btn outline-blue">保存配置</button><button id="createUploadTaskButton" class="btn primary">正式上货</button></div>
+        </div>
+
+        <div class="temu-upload-layout refined">
+          <div class="temu-left-stack">
+            <div class="card">
+              <div class="card-head"><div class="card-title">店铺与模板</div><span class="badge green">上品必填配置</span></div>
+              <div class="card-body form-grid compact-form">
+                <label>店铺账号<input id="settingTemuShopAccount" class="input" placeholder="填写自己的店铺账号" /></label>
+                <label>经营站点<input id="settingTemuSite" class="input" placeholder="美国站" /></label>
+                <label>产品模板<input id="settingTemuProductTemplate" class="input" placeholder="填写你自己在店小秘/Temu后台保存的产品模板名" /></label>
+                <label>尺码分类<input id="settingTemuSizeCategory" class="input" placeholder="例如 女下装" /></label>
+                <label>尺码模板<input id="settingTemuSizeTemplate" class="input" placeholder="填写你自己的尺码模板名" /></label>
+                <label>仓库模板<input id="settingTemuWarehouseTemplate" class="input" placeholder="填写你自己的仓库模板/仓库名称" /></label>
+                <label>物流模板<input id="settingTemuLogisticsTemplate" class="input" placeholder="填写你自己的物流模板名" /></label>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-head"><div class="card-title">本次任务参数</div><span class="badge purple">写入任务快照</span></div>
+              <div class="card-body form-grid compact-form">
+                <label>起始 SKC<input id="settingTemuStartSkc" class="input" placeholder="从指定 SKC 开始，留空则全部" /></label>
+                <label>处理数量<input id="settingTemuBatchLimit" class="input" type="number" min="0" placeholder="空=全部" /></label>
+                <label>找不到 SKC<select id="settingUploadSkcMissingPolicy" class="select"><option value="pause">暂停等待人工处理</option><option value="skip">跳过该商品</option><option value="fail">标记失败并停止任务</option></select></label>
+                <label>遇错策略<select id="settingUploadErrorPolicy" class="select"><option value="skip">跳过失败商品继续</option><option value="pause">暂停等待人工处理</option><option value="stop">停止整个任务</option></select></label>
+              </div>
+            </div>
+          </div>
+
+          <div class="temu-right-stack">
+            <div class="card">
+              <div class="card-head"><div class="card-title">运行日志</div><button id="clearOperationLogButton" class="btn ghost" type="button">清空日志</button></div>
+              <div class="card-body">
+                <div class="progress"><span id="operationProgressBar"></span></div>
+                <div id="operationLogBody" class="terminal-log">[Temu] 等待上货操作</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="records">
+        <div class="page-head">
+          <div><h1>发布记录</h1><div class="desc">查看店小秘上货结果、失败原因和执行时间</div></div>
+          <div class="actions">
+            <input id="recordsSearchInput" class="input search" placeholder="按标题 / SKC 搜索..." />
+            <select id="recordsResultFilter" class="select">
+              <option value="">全部结果</option>
+              <option value="success">成功</option>
+              <option value="failed">失败</option>
+            </select>
+            <button id="refreshRecordsButton" class="btn outline-blue">刷新</button>
+            <button id="retryFailedButton" class="btn primary">重试失败</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><div class="card-title">发布明细</div><span class="badge blue">按任务记录</span></div>
+          <div class="card-body table-wrap">
+            <table>
+              <thead><tr><th>结果</th><th>SKC</th><th>标题</th><th>失败原因</th><th>时间</th></tr></thead>
+              <tbody id="publishRecordsBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="images">
+        <div class="page-head">
+          <div><h1>提示词管理</h1><div class="desc">管理商品标题生成、图片识别和商品处理使用的提示词模板</div></div>
+          <button id="newPromptButton" class="btn primary">新增提示词</button>
+        </div>
+        <div class="card">
+          <div class="card-head"><div class="card-title">提示词模板</div><span class="badge purple">AI 配置</span></div>
+          <div class="card-body table-wrap">
+            <table>
+              <thead><tr><th>名称</th><th>适用类目</th><th>类型</th><th>用途</th><th>状态</th><th>操作</th></tr></thead>
+              <tbody id="promptsBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="api">
+        <div class="page-head"><div><h1>API 管理</h1><div class="desc">管理 DeepSeek API、图生图 API 和豆包视觉识别 API</div></div><button id="saveApiButton" class="btn primary">保存 API 配置</button></div>
+        <div class="task-layout">
+          <div class="card"><div class="card-head"><div class="card-title">DeepSeek API</div><span class="badge blue">文案 / 标题</span></div><div class="card-body form-grid"><label>接口名称<input id="deepseekName" class="input" /></label><label>状态<select id="deepseekEnabled" class="select"><option value="true">启用</option><option value="false">停用</option></select></label><label>Base URL<input id="deepseekBaseUrl" class="input" /></label><label>模型<input id="deepseekModel" class="input" /></label><label>API Key<input id="deepseekApiKey" class="input" type="password" /></label><label>默认用途<input id="deepseekUsage" class="input" /></label></div></div>
+          <div class="card"><div class="card-head"><div class="card-title">图生图 API</div><span class="badge purple">图片处理</span></div><div class="card-body form-grid"><label>接口名称<input id="imageName" class="input" /></label><label>状态<select id="imageEnabled" class="select"><option value="true">启用</option><option value="false">停用</option></select></label><label>Base URL<input id="imageBaseUrl" class="input" /></label><label>模型 / 工作流<input id="imageModel" class="input" /></label><label>API Key<input id="imageApiKey" class="input" type="password" /></label><label>默认用途<input id="imageUsage" class="input" /></label></div></div>
+          <div class="card"><div class="card-head"><div class="card-title">豆包视觉识别 API</div><span class="badge orange">颜色分图</span></div><div class="card-body form-grid"><label>接口名称<input id="visionName" class="input" placeholder="豆包视觉识别" /></label><label>状态<select id="visionEnabled" class="select"><option value="true">启用</option><option value="false">停用</option></select></label><label>Base URL<input id="visionBaseUrl" class="input" placeholder="https://ark.cn-beijing.volces.com/api/v3" /></label><label>模型<input id="visionModel" class="input" placeholder="doubao-1.5-vision-pro-32k" /></label><label>API Key<input id="visionApiKey" class="input" type="password" /></label><label>默认用途<input id="visionUsage" class="input" placeholder="SKC颜色图片识别" /></label></div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><div class="card-title">COS 图片存储</div><span class="badge blue">可留空沿用旧配置</span></div>
+          <div class="card-body form-grid">
+            <label>COS Region<input id="settingCosRegion" class="input" placeholder="留空则沿用旧配置" /></label>
+            <label>COS Bucket<input id="settingCosBucket" class="input" placeholder="留空则沿用旧配置" /></label>
+            <label>COS Prefix<input id="settingCosPrefix" class="input" placeholder="留空则沿用旧配置" /></label>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><div class="card-title">采集配置</div><span class="badge green">1688 / 万邦</span></div>
+          <div class="card-body form-grid">
+            <label>默认采集模式<select id="settingCollectionMode" class="select"><option value="1688">1688 商品采集</option></select></label>
+            <label>外部采集执行开关<select id="settingEnableExternalCollection" class="select"><option value="false">关闭：只生成请求快照</option><option value="true">开启：允许执行外部采集</option></select></label>
+            <label>万邦 Key<input id="settingOneboundKey" class="input" type="password" /></label>
+            <label>万邦 Secret<input id="settingOneboundSecret" class="input" type="password" /></label>
+            <label>1688 Cookie 字符串<input id="setting1688Cookie" class="input" type="password" placeholder="可直接粘贴浏览器 Cookie" /></label>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="settings">
+        <div class="page-head">
+          <div><h1>设置中心</h1><div class="desc">按运行、安全、COS、采集和系统诊断分组管理配置</div></div>
+          <button id="saveSettingsButton" class="btn primary">保存设置</button>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><div class="card-title">上货运行</div><span class="badge orange">RPA</span></div>
+          <div class="card-body form-grid">
+            <label>运行模式<select id="settingRunMode" class="select"><option value="headless">无头运行</option><option value="visible">显示浏览器</option></select></label>
+            <label>最大重试次数<input id="settingMaxRetries" class="input" /></label>
+            <label>真实 RPA 安全开关<select id="settingEnableRealRpa" class="select"><option value="false">关闭：阻断真实 RPA</option><option value="true">开启：允许调用真实 RPA</option></select></label>
+            <label>图片上传模式<select id="settingUploadImageSource" class="select"><option value="">沿用旧脚本配置</option><option value="local">本地文件上传</option><option value="cos">COS 网络图上传</option></select></label>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><div class="card-title">系统诊断</div><span class="badge blue">运行状态</span></div>
+          <div id="systemStatusBox" class="card-body"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="modal" class="modal hidden">
+    <form id="productForm" class="dialog">
+      <div class="dialog-head"><h2 id="formTitle">新增商品</h2><button type="button" id="closeModal" class="icon-btn">×</button></div>
+      <input type="hidden" id="productId" />
+      <div class="form-grid">
+        <label>商品标题<input id="title" class="input" required /></label>
+        <label>SKC<input id="skc" class="input" required /></label>
+        <label>SKU 摘要<input id="skuSummary" class="input" placeholder="例如：6色 × 6码" /></label>
+        <label>状态<select id="status" class="select"><option>利润正常</option><option>待补主图</option><option>待处理</option></select></label>
+        <label>采购价<input id="purchasePrice" class="input" type="number" step="0.01" value="0" /></label>
+        <label>头程<input id="firstMile" class="input" type="number" step="0.01" value="0" /></label>
+        <label>平台成本<input id="platformCost" class="input" type="number" step="0.01" value="0" /></label>
+      </div>
+      <div class="dialog-actions"><button type="button" id="cancelButton" class="btn ghost">取消</button><button class="btn primary">保存</button></div>
+    </form>
+  </div>
+
+  <div id="processingModal" class="modal hidden">
+    <form id="processingForm" class="dialog">
+      <div class="dialog-head"><h2 id="processingFormTitle">编辑处理字段</h2><button type="button" id="closeProcessingModal" class="icon-btn">×</button></div>
+      <input type="hidden" id="processingProductId" />
+      <div class="form-grid">
+        <label>申报价<input id="processingDeclaredPrice" class="input" type="number" step="0.01" /></label>
+        <label>重量(g)<input id="processingWeightG" class="input" type="number" /></label>
+        <label>长(cm)<input id="processingLengthCm" class="input" type="number" /></label>
+        <label>宽(cm)<input id="processingWidthCm" class="input" type="number" /></label>
+        <label>高(cm)<input id="processingHeightCm" class="input" type="number" /></label>
+        <label>库存<input id="processingStock" class="input" type="number" /></label>
+        <label>发货时效<select id="processingShipDays" class="select"><option value="1">1天</option><option value="2">2天</option><option value="9">9天</option></select></label>
+        <label><span id="processingSourceLabel">站外链接</span><input id="processingSourceUrl" class="input" /></label>
+      </div>
+      <div class="dialog-actions"><button type="button" id="cancelProcessingButton" class="btn ghost">取消</button><button class="btn primary">保存处理字段</button></div>
+    </form>
+  </div>
+
+  <div id="promptModal" class="modal hidden">
+    <form id="promptForm" class="dialog">
+      <div class="dialog-head"><h2 id="promptFormTitle">编辑提示词</h2><button type="button" id="closePromptModal" class="icon-btn">×</button></div>
+      <input type="hidden" id="promptId" />
+      <div class="form-grid">
+        <label>名称<input id="promptName" class="input" /></label>
+        <label>适用类目<input id="promptCategory" class="input" /></label>
+<label>类型<select id="promptType" class="select"><option>标题提示词</option><option>图生图提示词</option><option>图片识别提示词</option></select></label>
+        <label>用途<input id="promptUsage" class="input" /></label>
+        <label>状态<select id="promptStatus" class="select"><option>启用中</option><option>停用</option></select></label>
+      </div>
+      <label style="display:grid; gap:8px; margin-top:14px; font-weight:800; color:#374151;">提示词内容<textarea id="promptContent" class="input" style="height:180px; padding-top:12px;"></textarea></label>
+      <div class="dialog-actions"><button type="button" id="cancelPromptButton" class="btn ghost">取消</button><button class="btn primary">保存提示词</button></div>
+    </form>
+  </div>
+
+  <div id="collectionRequestModal" class="modal hidden">
+    <div class="dialog">
+      <div class="dialog-head"><h2>采集请求快照</h2><button type="button" id="closeCollectionRequestModal" class="icon-btn">×</button></div>
+      <pre id="collectionRequestContent" style="white-space:pre-wrap; max-height:520px; overflow:auto; background:#111827; color:#d1fae5; padding:16px; border-radius:14px;"></pre>
+    </div>
+  </div>
+  <div id="imagePreviewModal" class="modal hidden">
+    <div class="dialog">
+      <div class="dialog-head"><h2 id="imagePreviewTitle">商品图片</h2><button type="button" id="closeImagePreviewModal" class="icon-btn">×</button></div>
+      <div style="display:grid; place-items:center;"><img id="imagePreviewImg" class="image-preview" alt="商品图片" /></div>
+      <div class="dialog-actions"><a id="imagePreviewLink" class="btn outline-blue" href="#" target="_blank" rel="noopener">打开原图</a></div>
+    </div>
+  </div>
+
+  <div id="slotImagePickerModal" class="modal hidden">
+    <div class="dialog slot-picker-dialog">
+      <div class="dialog-head"><h2 id="slotImagePickerTitle">选择图片</h2><button type="button" id="closeSlotImagePickerModal" class="icon-btn">&times;</button></div>
+      <div class="image-picker-toolbar"><span id="slotImagePickerHint" class="desc">勾选一张或多张图片，确认后自动填入连续槽位</span><span id="slotImagePickerCount" class="badge blue">0</span></div>
+      <div id="slotImagePickerGrid" class="slot-picker-grid"><div class="empty-row">暂无可选图片</div></div>
+      <div class="dialog-actions"><button type="button" id="cancelSlotImagePickerButton" class="btn ghost">关闭</button><button type="button" id="confirmSlotImagePickerButton" class="btn primary">确认选择</button></div>
+    </div>
+  </div>
+  <div id="hoverImagePreview" class="hover-image-preview hidden"><img alt="图片预览" /></div>
+  <input id="collectionResultFileInput" type="file" accept=".csv,.xlsx,.xlsm,.json" style="display:none" />
+  <div id="logModal" class="modal hidden">
+    <div class="dialog">
+      <div class="dialog-head"><h2>Run Log</h2><button type="button" id="closeLogModal" class="icon-btn">×</button></div>
+      <pre id="logContent" style="white-space:pre-wrap; max-height:520px; overflow:auto; background:#111827; color:#d1fae5; padding:16px; border-radius:14px;"></pre>
+    </div>
+  </div>
+  <div id="appDialogModal" class="modal hidden">
+    <div class="dialog app-dialog">
+      <div class="dialog-head"><h2 id="appDialogTitle">通知</h2><button type="button" id="appDialogClose" class="icon-btn">&times;</button></div>
+      <div id="appDialogMessage" class="app-dialog-message"></div>
+      <div class="dialog-actions"><button type="button" id="appDialogCancel" class="btn ghost">取消</button><button type="button" id="appDialogOk" class="btn primary">确定</button></div>
+    </div>
+  </div>
+  <button id="backToTopButton" class="back-to-top hidden" type="button" title="回到最上">↑</button>
+  <script src="/static/app.js?v=20260506-7"></script>
+</body>
+</html>
+
+
+
+

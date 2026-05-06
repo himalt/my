@@ -1,0 +1,35 @@
+﻿# Runtime data / secrets
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.log
+*.err.log
+*.out.log
+*_cookies.json
+*secret*
+*.pem
+*.key
+.env
+.env.*
+
+# Build outputs
+build/
+dist/
+*.spec
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Browser/user profiles
+browser_profiles/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
