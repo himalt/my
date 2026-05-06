@@ -16,6 +16,7 @@ data/
 # Build outputs
 build/
 dist/
+release/
 *.spec
 
 # Python caches

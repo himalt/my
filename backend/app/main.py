@@ -46,6 +46,7 @@ IMAGE_DIR = DATA_DIR / "images"
 DB_PATH = Path(os.environ.get("UPLOAD_ASSISTANT_DB", DATA_DIR / "app.db"))
 FRONTEND_DIR = RESOURCE_DIR / "frontend"
 STATIC_DIR = FRONTEND_DIR / "static"
+RELEASE_DIR = BASE_DIR / "release"
 SCRIPT_SOURCE_DIR = Path(r"C:\Users\zyf\.accio\accounts\1753260534\agents\MID-27260534U1775454-06F6F0-2183-EB2CBD\project")
 NANOBANANA_SUBMIT_URL = "https://api.wuyinkeji.com/api/async/image_nanoBanana2"
 NANOBANANA_DETAIL_URL = "https://api.wuyinkeji.com/api/async/detail"
@@ -2929,6 +2930,27 @@ def system_status() -> dict[str, object]:
         "upload_preflight": upload,
         "collection_preflight": collection,
         "checklist": checklist,
+    }
+
+
+@app.get("/api/downloads/windows-app")
+def download_windows_app() -> FileResponse:
+    target = (RELEASE_DIR / "upload-assistant-windows.zip").resolve()
+    if target.parent != RELEASE_DIR.resolve() or not target.exists():
+        raise HTTPException(status_code=404, detail="上货软件安装包还没有上传到服务器")
+    return FileResponse(target, filename="upload-assistant-windows.zip", media_type="application/zip")
+
+
+@app.get("/api/downloads")
+def list_downloads() -> dict[str, object]:
+    target = RELEASE_DIR / "upload-assistant-windows.zip"
+    return {
+        "windows_app": {
+            "available": target.exists(),
+            "filename": target.name,
+            "size": target.stat().st_size if target.exists() else 0,
+            "download_url": "/api/downloads/windows-app" if target.exists() else "",
+        }
     }
 
 
