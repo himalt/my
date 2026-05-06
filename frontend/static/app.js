@@ -1799,6 +1799,16 @@ async function importSelectedCollectionItems() {
     await notify('请选择要加入商品库的采集结果');
     return;
   }
+  const selectedItems = collectionItems.filter(item => ids.includes(item.id));
+  const missingImageItems = selectedItems.filter(item => !item.image_url);
+  const previewLines = selectedItems.slice(0, 6).map((item, index) => `${index + 1}. ${item.title || '未命名商品'}`);
+  const moreText = selectedItems.length > previewLines.length ? `\n……另有 ${selectedItems.length - previewLines.length} 条` : '';
+  const missingText = missingImageItems.length ? `\n\n其中 ${missingImageItems.length} 条没有主图，建议先补图，否则进入商品处理后仍会显示需补图。` : '';
+  const confirmed = await askConfirm(
+    `确认将 ${selectedItems.length} 条采集结果加入商品库？\n\n${previewLines.join('\n')}${moreText}${missingText}`,
+    '加入商品库确认'
+  );
+  if (!confirmed) return;
   const response = await fetch('/api/collection-items/import', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
