@@ -196,6 +196,48 @@ function addCollectionProgressLog(step, type = 'info', message = '') {
   renderCollectionProgressLogs();
 }
 
+function openProgressDialog({ title = '执行进度', message = '正在处理，请稍候...', okText = '关闭' } = {}) {
+  if (!appDialogModal) return;
+  appDialogTitle.textContent = title;
+  appDialogMessage.innerHTML = `
+    <div class="collection-progress-summary">
+      <span>${message}</span>
+      <span class="log-status running">心跳中</span>
+    </div>
+    <div id="appDialogProgressLog" class="chat-log"><div class="chat-empty">等待开始</div></div>
+  `;
+  appDialogOk.textContent = okText;
+  appDialogCancel.style.display = 'none';
+  appDialogOk.onclick = () => appDialogModal.classList.add('hidden');
+  appDialogClose.onclick = () => appDialogModal.classList.add('hidden');
+  appDialogModal.classList.remove('hidden');
+}
+
+function updateProgressDialogLog(logs) {
+  const target = document.querySelector('#appDialogProgressLog');
+  if (!target) return;
+  if (!logs.length) {
+    target.innerHTML = '<div class="chat-empty">等待开始</div>';
+    return;
+  }
+  const statusMap = { running: '处理中', success: '完成', error: '需处理', info: '记录' };
+  target.innerHTML = logs.slice(0, 50).map(log => `
+    <div class="chat-row ${log.type}">
+      <div class="chat-avatar">${log.type === 'success' ? '✓' : (log.type === 'error' ? '!' : '…')}</div>
+      <div class="chat-bubble">
+        <div class="chat-meta"><b>${log.step}</b><span>${log.time}</span><em class="log-status ${log.type}">${statusMap[log.type] || statusMap.info}</em></div>
+        <div class="chat-message">${log.message}</div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function pushDialogProgress(logs, step, type, message) {
+  logs.unshift({ time: new Date().toLocaleTimeString(), step, type, message });
+  updateProgressDialogLog(logs);
+  addCollectionProgressLog(step, type, message);
+}
+
 const saveApiButton = document.querySelector('#saveApiButton');
 const saveSettingsButton = document.querySelector('#saveSettingsButton');
 const refreshSystemStatusButton = document.querySelector('#refreshSystemStatusButton');
@@ -1809,6 +1851,18 @@ async function importSelectedCollectionItems() {
     '加入商品库确认'
   );
   if (!confirmed) return;
+  const progressLogs = [];
+  openProgressDialog({ title: '加入商品库进度', message: `正在把 ${selectedItems.length} 条采集结果加入商品库` });
+  pushDialogProgress(progressLogs, '准备入库', 'running', `已读取 ${selectedItems.length} 条选中商品，开始校验主图和状态。`);
+  await new Promise(resolve => setTimeout(resolve, 260));
+  const pendingCount = selectedItems.filter(item => item.status === 'pending').length;
+  pushDialogProgress(progressLogs, '心跳检查', 'running', `待入库 ${pendingCount} 条；已入库/其他状态 ${selectedItems.length - pendingCount} 条会由后端自动跳过。`);
+  if (missingImageItems.length) {
+    pushDialogProgress(progressLogs, '主图检查', 'error', `${missingImageItems.length} 条缺少主图，建议先补图；本次仍会提交给后端按规则处理。`);
+  } else {
+    pushDialogProgress(progressLogs, '主图检查', 'success', '选中商品均有主图。');
+  }
+  pushDialogProgress(progressLogs, '提交入库', 'running', '正在请求服务器写入商品库...');
   const response = await fetch('/api/collection-items/import', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1816,15 +1870,16 @@ async function importSelectedCollectionItems() {
   });
   if (!response.ok) {
     const error = await response.json();
-    await notify(error.detail || '加入商品库失败');
+    pushDialogProgress(progressLogs, '入库失败', 'error', error.detail || '加入商品库失败');
     return;
   }
-  await notify('已加入商品库');
+  pushDialogProgress(progressLogs, '刷新采集结果', 'running', '入库成功，正在刷新采集结果、商品库和商品处理页面。');
   await loadCollectionItems();
   await loadProducts();
   await loadProcessingItems();
-loadUploadTasks();
-loadPublishRecords();
+  loadUploadTasks();
+  loadPublishRecords();
+  pushDialogProgress(progressLogs, '入库完成', 'success', `已完成 ${selectedItems.length} 条采集结果的入库处理。`);
 }
 
 async function updateSelectedCollectionItems(action) {
