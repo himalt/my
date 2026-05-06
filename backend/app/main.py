@@ -1800,21 +1800,6 @@ def init_db() -> None:
                         now_text(),
                     ),
                 )
-        collection_count = db.execute("SELECT COUNT(*) AS total FROM collection_items").fetchone()["total"]
-        if collection_count == 0:
-            for title, price, sales, image_count in [
-                ("1688 denim shorts bestseller", 28.8, 1200, 18),
-                ("summer casual denim shorts", 25.0, 860, 12),
-                ("european frayed denim shorts", 31.5, 540, 15),
-            ]:
-                db.execute(
-                    """
-                    INSERT INTO collection_items (title, source, source_url, image_url, price, sales, image_count, status, created_at)
-                    VALUES (?, '1688', '', '', ?, ?, ?, 'pending', ?)
-                    """,
-                    (title, price, sales, image_count, now_text()),
-                )
-
         upload_columns = [row[1] for row in db.execute("PRAGMA table_info(upload_tasks)").fetchall()]
         if "run_log" not in upload_columns:
             db.execute("ALTER TABLE upload_tasks ADD COLUMN run_log TEXT NOT NULL DEFAULT ''")
