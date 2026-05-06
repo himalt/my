@@ -477,8 +477,29 @@ class UploadTask(BaseModel):
     failed_count: int = 0
     export_path: str = ""
     run_log: str = ""
+    executor_id: str = ""
+    claimed_at: str = ""
+    heartbeat_at: str = ""
     created_at: str
     updated_at: str
+
+
+class ExecutorClaimPayload(BaseModel):
+    executor_id: str = ""
+    version: str = ""
+
+
+class ExecutorHeartbeatPayload(BaseModel):
+    executor_id: str = ""
+
+
+class ExecutorReportPayload(BaseModel):
+    executor_id: str = ""
+    status: str
+    success_count: int = 0
+    failed_count: int = 0
+    run_log: str = ""
+    stdout: str = ""
 
 
 class PublishRecord(BaseModel):
@@ -1557,6 +1578,9 @@ def init_db() -> None:
                 failed_count INTEGER NOT NULL DEFAULT 0,
                 export_path TEXT NOT NULL DEFAULT '',
                 run_log TEXT NOT NULL DEFAULT '',
+                executor_id TEXT NOT NULL DEFAULT '',
+                claimed_at TEXT NOT NULL DEFAULT '',
+                heartbeat_at TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
@@ -1757,6 +1781,12 @@ def init_db() -> None:
         upload_columns = [row[1] for row in db.execute("PRAGMA table_info(upload_tasks)").fetchall()]
         if "run_log" not in upload_columns:
             db.execute("ALTER TABLE upload_tasks ADD COLUMN run_log TEXT NOT NULL DEFAULT ''")
+        if "executor_id" not in upload_columns:
+            db.execute("ALTER TABLE upload_tasks ADD COLUMN executor_id TEXT NOT NULL DEFAULT ''")
+        if "claimed_at" not in upload_columns:
+            db.execute("ALTER TABLE upload_tasks ADD COLUMN claimed_at TEXT NOT NULL DEFAULT ''")
+        if "heartbeat_at" not in upload_columns:
+            db.execute("ALTER TABLE upload_tasks ADD COLUMN heartbeat_at TEXT NOT NULL DEFAULT ''")
         collection_columns = [row[1] for row in db.execute("PRAGMA table_info(collection_items)").fetchall()]
         if "image_url" not in collection_columns:
             db.execute("ALTER TABLE collection_items ADD COLUMN image_url TEXT NOT NULL DEFAULT ''")
@@ -4025,6 +4055,118 @@ def get_upload_task_manifest(task_id: int) -> dict[str, object]:
     if not manifest_path.exists():
         return {"path": str(manifest_path), "content": {}}
     return {"path": str(manifest_path), "content": json.loads(manifest_path.read_text(encoding="utf-8"))}
+
+
+def _executor_task_payload(row: sqlite3.Row) -> dict[str, object]:
+    manifest_path = DATA_DIR / "logs" / f"upload_task_{row['id']}.json"
+    manifest: dict[str, object] = {}
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    export_path = Path(row["export_path"] or "")
+    filename = export_path.name if export_path.name else ""
+    return {
+        "task": upload_task_from_row(row).model_dump(),
+        "manifest": manifest,
+        "export_download_url": f"/api/executor/tasks/{row['id']}/export" if filename else "",
+        "manifest_download_url": f"/api/upload-tasks/{row['id']}/manifest",
+        "settings": upload_operation_settings_snapshot(),
+    }
+
+
+@app.post("/api/executor/tasks/claim")
+def executor_claim_task(payload: ExecutorClaimPayload) -> dict[str, object]:
+    executor_id = payload.executor_id.strip() or "default-windows-executor"
+    timestamp = now_text()
+    with connect() as db:
+        row = db.execute(
+            """
+            SELECT * FROM upload_tasks
+            WHERE status IN ('export_ready', 'queued_for_executor')
+            ORDER BY id ASC
+            LIMIT 1
+            """
+        ).fetchone()
+        if not row:
+            return {"task": None}
+        db.execute(
+            """
+            UPDATE upload_tasks
+            SET status = 'claimed_by_executor', executor_id = ?, claimed_at = ?, heartbeat_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (executor_id, timestamp, timestamp, timestamp, row["id"]),
+        )
+        row = db.execute("SELECT * FROM upload_tasks WHERE id = ?", (row["id"],)).fetchone()
+    return _executor_task_payload(row)
+
+
+@app.post("/api/executor/tasks/{task_id}/heartbeat")
+def executor_heartbeat(task_id: int, payload: ExecutorHeartbeatPayload) -> dict[str, object]:
+    timestamp = now_text()
+    with connect() as db:
+        row = db.execute("SELECT * FROM upload_tasks WHERE id = ?", (task_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="上货任务不存在")
+        if row["executor_id"] and payload.executor_id and row["executor_id"] != payload.executor_id:
+            raise HTTPException(status_code=409, detail="任务已被其他执行器领取")
+        db.execute("UPDATE upload_tasks SET heartbeat_at = ?, updated_at = ? WHERE id = ?", (timestamp, timestamp, task_id))
+    return {"ok": True, "heartbeat_at": timestamp}
+
+
+@app.get("/api/executor/tasks/{task_id}/export")
+def executor_download_export(task_id: int) -> FileResponse:
+    with connect() as db:
+        row = db.execute("SELECT * FROM upload_tasks WHERE id = ?", (task_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="上货任务不存在")
+    target = Path(row["export_path"] or "").resolve()
+    export_dir = (DATA_DIR / "export").resolve()
+    if target.parent != export_dir or target.suffix != ".xlsx" or not target.exists():
+        raise HTTPException(status_code=404, detail="导出表不存在")
+    return FileResponse(target, filename=target.name)
+
+
+@app.post("/api/executor/tasks/{task_id}/report", response_model=UploadTask)
+def executor_report_task(task_id: int, payload: ExecutorReportPayload) -> UploadTask:
+    allowed_status = {"rpa_success", "rpa_failed", "needs_review", "blocked"}
+    status = payload.status if payload.status in allowed_status else "rpa_failed"
+    timestamp = now_text()
+    log_text = payload.run_log.strip()
+    if payload.stdout.strip():
+        log_text = (log_text + "\n\n" if log_text else "") + payload.stdout.strip()
+    with connect() as db:
+        row = db.execute("SELECT * FROM upload_tasks WHERE id = ?", (task_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="上货任务不存在")
+        if row["executor_id"] and payload.executor_id and row["executor_id"] != payload.executor_id:
+            raise HTTPException(status_code=409, detail="任务已被其他执行器领取")
+        if log_text:
+            log_path = write_run_log(task_id, log_text)
+            run_log = f"Executor {payload.executor_id or row['executor_id']} reported {status}. Log: {log_path}"
+        else:
+            run_log = f"Executor {payload.executor_id or row['executor_id']} reported {status}."
+        db.execute(
+            """
+            UPDATE upload_tasks
+            SET status = ?, success_count = ?, failed_count = ?, run_log = ?, heartbeat_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (status, payload.success_count, payload.failed_count, run_log, timestamp, timestamp, task_id),
+        )
+        db.execute("DELETE FROM publish_records")
+        manifest_path = DATA_DIR / "logs" / f"upload_task_{task_id}.json"
+        manifest: dict[str, object] = {}
+        if manifest_path.exists():
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for item in manifest.get("items", []) if isinstance(manifest.get("items"), list) else []:
+            result = "Success" if status == "rpa_success" else "Failed"
+            reason = "Executor reported success" if status == "rpa_success" else run_log
+            db.execute(
+                "INSERT INTO publish_records (result, skc, title, reason, created_at) VALUES (?, ?, ?, ?, ?)",
+                (result, str(item.get("skc", "")), str(item.get("title", "")), reason, timestamp),
+            )
+        row = db.execute("SELECT * FROM upload_tasks WHERE id = ?", (task_id,)).fetchone()
+    return upload_task_from_row(row)
 
 
 @app.get("/api/products/missing-images", response_model=list[Product])
