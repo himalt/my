@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
+import re
 import socket
 import subprocess
 import sys
@@ -51,27 +51,46 @@ def absolute_url(server_url: str, path: str) -> str:
     return normalize_server_url(server_url) + "/" + path.lstrip("/")
 
 
-def count_success(stdout_text: str) -> tuple[int, int, str]:
-    if "完成：成功" in stdout_text or "完成:成功" in stdout_text:
-        import re
-
-        match = re.search(r"完成[：:]成功\s*(\d+)\s*个[，,]\s*失败/跳过\s*(\d+)\s*个", stdout_text)
+def count_result(stdout_text: str) -> tuple[int, int, str]:
+    patterns = [
+        r"完成[:：]\s*成功\s*(\d+)\s*个[，,]\s*失败/跳过\s*(\d+)\s*个",
+        r"完成[:：]\s*成功\s*(\d+)\s*个[，,]\s*失败\s*(\d+)\s*个",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, stdout_text)
         if match:
             success = int(match.group(1))
             failed = int(match.group(2))
             return success, failed, "rpa_success" if success > 0 and failed == 0 else "rpa_failed"
-    failure_markers = ["导入提交失败", "已停止后续上图", "未获取到待检测的产品货号", "超时仍未就绪", "完成：成功 0 个"]
+    failure_markers = [
+        "导入提交失败",
+        "已停止后续上图",
+        "未获取到待检测的产品货号",
+        "超时仍未就绪",
+        "完成：成功 0 个",
+        "完成: 成功 0 个",
+    ]
     if any(marker in stdout_text for marker in failure_markers):
         return 0, 1, "rpa_failed"
     return 0, 0, "rpa_failed"
 
 
-def run_rpa(rpa_dir: Path, xlsx_path: Path, manifest: dict, no_publish: bool) -> tuple[str, int, int, str]:
-    product_ids = []
-    for item in manifest.get("items", []) if isinstance(manifest.get("items"), list) else []:
+def task_skc_values(manifest: dict) -> list[str]:
+    product_ids: list[str] = []
+    items = manifest.get("items", [])
+    if not isinstance(items, list):
+        return product_ids
+    for item in items:
+        if not isinstance(item, dict):
+            continue
         skc = str(item.get("skc", "")).strip()
         if skc and skc not in product_ids:
             product_ids.append(skc)
+    return product_ids
+
+
+def build_rpa_command(xlsx_path: Path, manifest: dict, no_publish: bool) -> list[str]:
+    product_ids = task_skc_values(manifest)
     if not product_ids:
         raise RuntimeError("manifest 中没有可执行 SKC")
 
@@ -82,6 +101,9 @@ def run_rpa(rpa_dir: Path, xlsx_path: Path, manifest: dict, no_publish: bool) ->
     settings = manifest.get("settings", {}) if isinstance(manifest.get("settings"), dict) else {}
     upload = settings.get("flow", {}) if isinstance(settings.get("flow"), dict) else {}
     templates = settings.get("temu", {}) if isinstance(settings.get("temu"), dict) else {}
+
+    if str(upload.get("save_screenshots", "false")).lower() == "true":
+        command.append("--debug-shots")
 
     image_source = str(upload.get("image_source", "")).strip()
     if image_source:
@@ -99,18 +121,22 @@ def run_rpa(rpa_dir: Path, xlsx_path: Path, manifest: dict, no_publish: bool) ->
         value = str(templates.get(key, "")).strip()
         if value:
             command += [arg, value]
+    return command
 
-    print("执行命令：", " ".join(command))
+
+def run_rpa(rpa_dir: Path, xlsx_path: Path, manifest: dict, no_publish: bool) -> tuple[str, int, int, str]:
+    command = build_rpa_command(xlsx_path, manifest, no_publish)
+    print("执行命令:", " ".join(command))
     completed = subprocess.run(command, cwd=rpa_dir, capture_output=True, text=True, timeout=60 * 60, check=False)
     stdout_text = (completed.stdout or "") + "\n" + (completed.stderr or "")
-    success_count, failed_count, status = count_success(stdout_text)
+    success_count, failed_count, status = count_result(stdout_text)
     if completed.returncode != 0:
         status = "rpa_failed"
     return stdout_text, success_count, failed_count, status
 
 
 def process_once(server_url: str, executor_id: str, rpa_dir: Path, work_dir: Path, no_publish: bool) -> bool:
-    claim = request_json("POST", absolute_url(server_url, "/api/executor/tasks/claim"), {"executor_id": executor_id, "version": "0.1.0"})
+    claim = request_json("POST", absolute_url(server_url, "/api/executor/tasks/claim"), {"executor_id": executor_id, "version": "0.2.0"})
     if not claim.get("task"):
         print("暂无待上货任务")
         return False
@@ -123,7 +149,7 @@ def process_once(server_url: str, executor_id: str, rpa_dir: Path, work_dir: Pat
     export_url = absolute_url(server_url, claim.get("export_download_url", ""))
     filename = Path(urllib.parse.urlparse(export_url).path).name or f"upload_task_{task_id}.xlsx"
     xlsx_path = download_file(export_url, work_dir / "downloads" / filename)
-    print(f"下载导入表：{xlsx_path}")
+    print(f"下载导入表: {xlsx_path}")
 
     try:
         stdout_text, success_count, failed_count, status = run_rpa(rpa_dir, xlsx_path, claim.get("manifest", {}), no_publish=no_publish)
@@ -157,7 +183,7 @@ def main() -> int:
     parser.add_argument("--server", default="http://124.156.175.191", help="Server URL")
     parser.add_argument("--executor-id", default=f"windows-{socket.gethostname()}", help="Executor ID")
     parser.add_argument("--rpa-dir", default=str(DEFAULT_RPA_DIR), help="Local RPA project directory")
-    parser.add_argument("--work-dir", default=str(Path(__file__).resolve().parents[1] / "data" / "executor"), help="Local executor work directory")
+    parser.add_argument("--work-dir", default=str(Path(__file__).resolve().parent / "data" / "executor"), help="Local executor work directory")
     parser.add_argument("--poll", type=int, default=5, help="Poll interval seconds")
     parser.add_argument("--once", action="store_true", help="Run one poll cycle and exit")
     parser.add_argument("--publish", action="store_true", help="Actually publish. Default keeps --no-publish for safety.")
@@ -173,7 +199,7 @@ def main() -> int:
         try:
             process_once(server_url, args.executor_id, rpa_dir, work_dir, no_publish=not args.publish)
         except (urllib.error.URLError, TimeoutError) as exc:
-            print(f"连接服务器失败：{exc}")
+            print(f"连接服务器失败: {exc}")
         if args.once:
             break
         time.sleep(max(args.poll, 1))

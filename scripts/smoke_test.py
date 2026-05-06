@@ -209,8 +209,9 @@ def main_smoke() -> None:
 
     main.save_settings([main.AppSetting(key='rpa_script_dir', value=str(ROOT / 'missing-rpa-script-dir'))])
     real_task = main.run_upload_task()
-    assert_true(real_task.status in {'needs_review', 'rpa_failed'}, 'formal upload should pass removed safety switch and fail only on preflight/runtime')
+    assert_true(real_task.status == 'queued_for_executor', 'formal upload should queue for Windows executor instead of running on server')
     assert_true('enable_real_rpa is false' not in real_task.run_log, 'formal upload still blocked by removed safety switch')
+    assert_true('Windows executor' in real_task.run_log, 'formal upload did not explain Windows executor queue')
     restore_script_dir = previous_settings.get('rpa_script_dir')
     main.save_settings([main.AppSetting(key='rpa_script_dir', value=restore_script_dir or '')])
 

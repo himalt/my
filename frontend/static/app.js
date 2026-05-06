@@ -624,6 +624,8 @@ function taskStatusText(status) {
     needs_review: '需处理',
     pending: '等待中',
     blocked: '已阻断',
+    queued_for_executor: '等待本机上货',
+    claimed_by_executor: '本机执行中',
     rpa_success: 'RPA 成功',
     rpa_failed: 'RPA 失败',
   };
@@ -821,7 +823,8 @@ async function realUpload() {
   const response = await fetch('/api/upload-tasks/run', { method: 'POST' });
   const task = await response.json();
   await refreshOperationalViews();
-  addOperationLog('正式上货', task.status === 'rpa_success' ? 'success' : (task.status === 'blocked' || task.status === 'needs_review' ? 'error' : 'info'), task.run_log || `任务状态：${task.status}`, task.status === 'rpa_success' ? 100 : 72);
+  const queued = task.status === 'queued_for_executor' || task.status === 'claimed_by_executor';
+  addOperationLog('正式上货', task.status === 'rpa_success' ? 'success' : (task.status === 'blocked' || task.status === 'needs_review' || task.status === 'rpa_failed' ? 'error' : 'info'), task.run_log || `任务状态：${task.status}`, task.status === 'rpa_success' ? 100 : (queued ? 82 : 72));
   await notify(task.run_log || '正式上货已执行');
 }
 

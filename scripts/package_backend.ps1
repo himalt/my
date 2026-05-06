@@ -32,6 +32,8 @@ New-Item -ItemType Directory -Path (Join-Path $DataDir 'images') -Force | Out-Nu
 New-Item -ItemType Directory -Path (Join-Path $DataDir 'export') -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $DataDir 'logs') -Force | Out-Null
 
+Copy-Item -LiteralPath (Join-Path $Root 'scripts\windows_executor.py') -Destination (Join-Path $DistDir 'windows_executor.py') -Force
+
 $Launcher = @"
 @echo off
 setlocal
@@ -39,7 +41,8 @@ set UPLOAD_ASSISTANT_HOST=127.0.0.1
 set UPLOAD_ASSISTANT_PORT=8000
 set UPLOAD_ASSISTANT_OPEN_BROWSER=true
 set UPLOAD_ASSISTANT_BROWSER_URL=http://124.156.175.191
-""%~dp0upload-assistant-backend.exe""
+start "" /min "%~dp0upload-assistant-backend.exe"
+python "%~dp0windows_executor.py" --server http://124.156.175.191 --publish
 pause
 "@
 Set-Content -LiteralPath (Join-Path $DistDir '启动上货助手后台.bat') -Value $Launcher -Encoding UTF8

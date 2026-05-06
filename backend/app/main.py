@@ -3855,9 +3855,10 @@ def upload_preflight() -> dict[str, object]:
     image_root = DATA_DIR / "images"
     items = build_processing_items()
     item_summary = upload_preflight_summary(items)
-    rpa_image_result = prepare_rpa_sku_images([item for item in items if not processing_item_issues(item)])
+    rpa_image_result = {"root": str(configured_rpa_sku_image_dir()), "prepared_count": 0, "missing_count": 0, "prepared": [], "missing": []}
     cos = cos_preflight()
-    infra_ready = all(script_status.values()) and image_root.exists() and script_dir.exists()
+    infra_ready = image_root.exists()
+    data_ready = item_summary["total_count"] > 0 and item_summary["blocked_count"] == 0
     return {
         "script_dir": str(script_dir),
         "script_dir_exists": script_dir.exists(),
@@ -3871,7 +3872,7 @@ def upload_preflight() -> dict[str, object]:
         "infra_ready": infra_ready,
         "items": item_summary,
         "command_preview": display_upload_rpa_command(str(latest_exports[0]) if latest_exports else "<export_path>"),
-        "ready": infra_ready and item_summary["total_count"] > 0 and item_summary["blocked_count"] == 0 and int(rpa_image_result["missing_count"]) == 0,
+        "ready": infra_ready and data_ready,
     }
 
 
@@ -3953,44 +3954,15 @@ def run_upload_task() -> UploadTask:
     diagnostics = upload_item_diagnostics(items)
     blocked_items = [item for item in diagnostics if not item["ready"]]
     timestamp = now_text()
-    script_dir = configured_script_dir()
-    command = upload_rpa_command(export["path"])
-    status = "blocked"
-    run_log = ""
-    stdout_text = ""
+    status = "queued_for_executor"
     if blocked_items:
         status = "needs_review"
         run_log = f"Real RPA blocked: {len(blocked_items)} products need review. SKC: {', '.join(str(item['skc']) for item in blocked_items)}"
     elif not preflight["ready"]:
         status = "needs_review"
-        run_log = "Real RPA blocked: preflight failed."
+        run_log = "Real RPA blocked: upload data preflight failed."
     else:
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=script_dir,
-                capture_output=True,
-                text=True,
-                timeout=60 * 60,
-                check=False,
-            )
-            stdout_text = (completed.stdout or "") + "\n" + (completed.stderr or "")
-            failure_markers = [
-                "导入提交失败",
-                "已停止后续上图",
-                "未获取到待检测的产品货号",
-                "超时仍未就绪",
-                "完成：成功 0 个",
-            ]
-            has_failure_marker = any(marker in stdout_text for marker in failure_markers)
-            status = "rpa_success" if completed.returncode == 0 and not has_failure_marker else "rpa_failed"
-            run_log = f"Real RPA finished with code {completed.returncode}. CWD: {script_dir}. Command: {' '.join(command)}"
-            if has_failure_marker:
-                run_log += " Failure marker detected in RPA output."
-        except Exception as exc:
-            status = "rpa_failed"
-            run_log = f"Real RPA exception: {exc}"
-            stdout_text = repr(exc)
+        run_log = "Real RPA queued for Windows executor. Open the upload software on the Windows machine to claim and run this task."
     failed_count = len(blocked_items)
     success_count = len(items) - failed_count
     with connect() as db:
@@ -4002,7 +3974,7 @@ def run_upload_task() -> UploadTask:
             (f"正式上货 {timestamp}", status, len(items), success_count, failed_count, export["path"], run_log, timestamp, timestamp),
         )
         task_id = cursor.lastrowid
-        log_path = write_run_log(task_id, run_log + "\n\n" + stdout_text)
+        log_path = write_run_log(task_id, run_log)
         manifest_path = write_task_manifest(task_id, mode, status, export["path"], items, run_log)
         db.execute("UPDATE upload_tasks SET run_log = ? WHERE id = ?", (run_log + f" Log: {log_path} Manifest: {manifest_path}", task_id))
         db.execute("DELETE FROM publish_records")
@@ -4016,7 +3988,7 @@ def run_upload_task() -> UploadTask:
             else:
                 db.execute(
                     "INSERT INTO publish_records (result, skc, title, reason, created_at) VALUES (?, ?, ?, ?, ?)",
-                    ("Success", item.skc, item.title, "Run checked", timestamp),
+                    ("Queued", item.skc, item.title, "Waiting for Windows executor", timestamp),
                 )
         row = db.execute("SELECT * FROM upload_tasks WHERE id = ?", (task_id,)).fetchone()
     return upload_task_from_row(row)
