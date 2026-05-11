@@ -34,3 +34,8 @@ browser_profiles/
 Thumbs.db
 .vscode/
 .idea/
+
+# Local packaged API defaults
+config/builtin_api_configs.json
+config/builtin_settings.json
+rpa/apify_config.json

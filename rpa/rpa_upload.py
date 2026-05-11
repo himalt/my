@@ -24,11 +24,17 @@ import sys
 import tempfile
 import shutil
 
+RPA_BASE_DIR = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__)
+_BUNDLED_PLAYWRIGHT_BROWSERS = os.path.join(RPA_BASE_DIR, 'ms-playwright')
+if os.path.isdir(_BUNDLED_PLAYWRIGHT_BROWSERS) and not os.environ.get('PLAYWRIGHT_BROWSERS_PATH'):
+    os.environ['PLAYWRIGHT_BROWSERS_PATH'] = _BUNDLED_PLAYWRIGHT_BROWSERS
+
 sys.path.insert(0, os.path.dirname(__file__))
 from pipeline import DATA_DIR, _clean_filename, _color_to_en
 
 SKU_IMG_DIR  = os.path.join(DATA_DIR, 'sku_images')
 COOKIES_PATH = os.path.join(DATA_DIR, 'dxm_cookies.json')
+BROWSER_PROFILE_DIR = os.path.join(DATA_DIR, 'browser_profile')
 BASE_URL     = 'https://www.dianxiaomi.com'
 LIST_URL     = f'{BASE_URL}/web/popTemu/pageList/offline'
 
@@ -59,6 +65,14 @@ except Exception:
 
 DEFAULT_IMAGE_SOURCE = _CONFIG.get('image_source', IMAGE_SOURCE_LOCAL)
 DEBUG_SHOTS = False
+
+
+def _set_sku_image_root(path):
+    global SKU_IMG_DIR
+    clean_path = os.path.abspath(str(path or '').strip())
+    if clean_path:
+        SKU_IMG_DIR = clean_path
+        print(f'RPA 图片目录: {SKU_IMG_DIR}')
 
 
 def _dedupe_keep_order(values):
@@ -220,9 +234,12 @@ def save_cookies(context):
 
 def load_cookies(context):
     if os.path.exists(COOKIES_PATH):
-        with open(COOKIES_PATH, encoding='utf-8') as f:
-            context.add_cookies(json.load(f))
-        return True
+        try:
+            with open(COOKIES_PATH, encoding='utf-8') as f:
+                context.add_cookies(json.load(f))
+            return True
+        except Exception as e:
+            print(f'  [warn] Cookie 文件加载失败，改用浏览器持久登录态: {e}')
     return False
 
 
@@ -241,6 +258,48 @@ def ensure_login(page, context):
         print('  登录完成，Cookie 已保存')
     else:
         print('  已登录 OK')
+
+
+def _visible_option_texts(page, limit=30):
+    try:
+        texts = page.locator('.ant-select-dropdown:visible .ant-select-item-option').evaluate_all(
+            "els => els.map(el => el.innerText || el.textContent || '').map(t => t.trim()).filter(Boolean)"
+        )
+        return texts[:limit]
+    except Exception:
+        return []
+
+
+def select_import_store(page, store_name):
+    expected = str(store_name or '').strip()
+    if not expected:
+        raise RuntimeError('店铺账号为空，请先在页面“店铺与模板”里填写店铺账号')
+    store_select = page.locator('.ant-select').filter(
+        has=page.locator(':text("请选择店铺")')
+    ).first
+    store_select.wait_for(state='visible', timeout=8000)
+    store_select.click()
+    time.sleep(0.8)
+    dropdown = page.locator('.ant-select-dropdown:visible').last
+    dropdown.wait_for(state='visible', timeout=5000)
+    exact_option = dropdown.locator('.ant-select-item-option').filter(has_text=re.compile(rf'^{re.escape(expected)}$')).first
+    try:
+        exact_option.wait_for(state='visible', timeout=2000)
+        exact_option.click()
+        print(f'  店铺已选择: {expected}')
+        return
+    except Exception:
+        pass
+    contains_option = dropdown.locator('.ant-select-item-option').filter(has_text=expected).first
+    try:
+        contains_option.wait_for(state='visible', timeout=1500)
+        option_text = contains_option.inner_text().strip()
+        contains_option.click()
+        print(f'  店铺已选择: {option_text}')
+        return
+    except Exception:
+        options = _visible_option_texts(page)
+        raise RuntimeError(f'未找到店铺「{expected}」。当前可选店铺: {" | ".join(options) if options else "未读取到店铺列表"}')
 
 
 # ── 弹窗 & 导入 ───────────────────────────────────────────────────────────────
@@ -333,6 +392,13 @@ def import_xlsx_to_dxm(page, xlsx_path,
     if sites is None:
         sites = IMPORT_SITES
     sites = [_normalize_site_name(site) for site in sites if _normalize_site_name(site)]
+    xlsx_path = os.path.abspath(str(xlsx_path or ''))
+    if not xlsx_path.lower().endswith('.xlsx'):
+        print(f'  [error] 导入文件必须是 .xlsx 后缀，当前文件: {xlsx_path}')
+        return False
+    if not os.path.exists(xlsx_path):
+        print(f'  [error] 导入文件不存在: {xlsx_path}')
+        return False
 
     print(f'\n=== 导入 xlsx → 店小秘 ===')
     print(f'  文件: {xlsx_path}')
@@ -361,16 +427,11 @@ def import_xlsx_to_dxm(page, xlsx_path,
 
     # ── 第二步：选择店铺 ──
     try:
-        store_select = page.locator('.ant-select').filter(
-            has=page.locator(':text("请选择店铺")')
-        ).first
-        store_select.click()
-        time.sleep(0.5)
-        page.locator(f'.ant-select-item-option:has-text("{store_name}")').first.click()
-        time.sleep(0.3)
-        print(f'  店铺已选择: {store_name}')
+        select_import_store(page, store_name)
     except Exception as e:
-        print(f'  [warn] 选择店铺失败: {e}')
+        print(f'  [error] 选择店铺失败: {e}')
+        _shot(page, 'import_store_select_error')
+        return False
 
     # ── 第二步：勾选站点 + 选仓库 ──
     for site in sites:
@@ -1546,10 +1607,7 @@ def upload_for_product(page, product_dir, cos_url_base=None, no_publish=False, w
         print('  [warn] 库存批量填写失败，已跳过保存，避免误提交')
         return False
 
-    # 描述图：本地上传 0.jpg(白底图) + 1.jpg(模特图)
-    if not _upload_desc_images(page, product_dir):
-        print('  [fail-closed] desc/detail image upload failed, skip save')
-        return False
+    print('  [描述图] 已改为导入表格携带，跳过编辑页详情图上传')
 
     # ── 剪掉无图片颜色行（防止保存时「服装类颜色属性必须上传3张图片」错误）──
     removed_cnt, remaining_empty = _prune_no_image_color_rows(page)
@@ -1998,8 +2056,13 @@ def _upload_desc_images(page, product_dir):
       1) 有「编辑描述」按钮 + 弹窗编辑器
       2) 无弹窗，直接在「产品描述」区域用 file input 上传
     """
-    # 收集本产品所有颜色的 0.jpg 和 1.jpg
     desc_imgs = []
+    detail_dir = os.path.join(product_dir, 'detail')
+    if os.path.isdir(detail_dir):
+        for fname in sorted(os.listdir(detail_dir)):
+            fpath = os.path.join(detail_dir, fname)
+            if os.path.isfile(fpath) and os.path.splitext(fname)[1].lower() in ('.jpg', '.jpeg', '.png', '.webp'):
+                desc_imgs.append(fpath)
     for color_folder in sorted(os.listdir(product_dir)):
         color_path = os.path.join(product_dir, color_folder)
         if not os.path.isdir(color_path):
@@ -4263,8 +4326,13 @@ def run(
     cos_tmp_dir = None
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=False, slow_mo=150)
-            context  = browser.new_context(viewport={'width': 1440, 'height': 900})
+            os.makedirs(BROWSER_PROFILE_DIR, exist_ok=True)
+            context = pw.chromium.launch_persistent_context(
+                BROWSER_PROFILE_DIR,
+                headless=False,
+                slow_mo=150,
+                viewport={'width': 1440, 'height': 900},
+            )
             load_cookies(context)
             page = context.new_page()
 
@@ -4276,14 +4344,14 @@ def run(
                 submitted = import_xlsx_to_dxm(page, xlsx_path, store_name=store_name, sites=site_values, warehouse_template=warehouse_name)
                 if not submitted:
                     print('导入提交失败，已停止后续上图。请先确认导入弹窗状态后重试。')
-                    browser.close()
+                    context.close()
                     return
 
                 # 仅按将要上图的产品做就绪检测，避免等待无本地目录/无COS图片的货号
                 wait_nos = prod_nos or import_prod_nos
                 if not wait_nos:
                     print('未获取到待检测的产品货号，无法确认导入完成，已停止后续上图。')
-                    browser.close()
+                    context.close()
                     return
 
                 INITIAL_WAIT_MAX = 240
@@ -4308,7 +4376,7 @@ def run(
                     print('导入后初始等待未命中就绪商品，转入滚动重试上传。')
 
             if not prod_folders:
-                browser.close()
+                context.close()
                 return
 
             # ── 上传图片 ──
@@ -4389,7 +4457,8 @@ def run(
                     else:
                         fail += 1
 
-            browser.close()
+            save_cookies(context)
+            context.close()
 
         print(f'\n完成：成功 {ok} 个，失败/跳过 {fail} 个')
         return fail == 0 and ok > 0
@@ -4419,6 +4488,7 @@ if __name__ == '__main__':
     warehouse_template = None
     logistics_template = None
     debug_shots = False
+    sku_image_dir = None
 
     i = 0
     while i < len(args):
@@ -4451,6 +4521,12 @@ if __name__ == '__main__':
             no_publish = True
         elif arg == '--debug-shots':
             debug_shots = True
+        elif arg == '--sku-image-dir':
+            if i + 1 >= len(args):
+                print('--sku-image-dir 缺少参数')
+                sys.exit(2)
+            i += 1
+            sku_image_dir = args[i]
         elif arg == '--shop-account':
             if i + 1 >= len(args):
                 print('--shop-account 缺少参数')
@@ -4499,6 +4575,9 @@ if __name__ == '__main__':
         else:
             ids.append(arg)
         i += 1
+
+    if sku_image_dir:
+        _set_sku_image_root(sku_image_dir)
 
     ok = run(
         offer_ids_filter=ids or None,

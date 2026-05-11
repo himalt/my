@@ -74,22 +74,28 @@ uvicorn backend.app.main:app --reload
 
 打开：http://127.0.0.1:8000
 
-## 后端打包
+## 本地客户端打包
 
-Windows 本地打包为可分发目录：
+Windows 本地打包为普通用户可双击运行的客户端目录：
 
 ```powershell
 cd D:\projects\upload-assistant
 .\scripts\package_backend.ps1 -Clean
 ```
 
-打包产物：`dist\upload-assistant-backend`
+打包产物：
 
-启动方式：双击 `dist\upload-assistant-backend\启动上货助手后台.bat`
+- 可分发目录：`dist\upload-assistant-backend`
+- 可分发压缩包：`release\upload-assistant-local-client.zip`
+
+启动方式：双击 `dist\upload-assistant-backend\启动上货助手.bat`
 
 说明：
 
 - 打包程序会内置 `frontend/` 静态页面。
-- 运行数据写在 exe 同级 `data/`，包括数据库、图片、导出表和日志。
+- 运行数据写在 exe 同级 `data/`，包括数据库、图片、采集结果、导出表和日志。
+- 重复双击不会重复启动后台；如果 `127.0.0.1:8000` 已有本应用，会直接打开页面。
+- 如果 8000 端口被其他程序占用，后台会自动尝试 8001-8019。
+- 需要真实店小秘 RPA 时，再双击 `启动上货执行器.bat`。
 - 可用环境变量覆盖：`UPLOAD_ASSISTANT_HOST`、`UPLOAD_ASSISTANT_PORT`、`UPLOAD_ASSISTANT_DATA_DIR`、`UPLOAD_ASSISTANT_DB`、`UPLOAD_ASSISTANT_OPEN_BROWSER`。
-- 打包不包含真实 RPA 外部脚本目录；默认沿用后端配置的本机脚本位置。
+- 页面提供“清理本地数据”，默认清理 7 天前成功任务的旧导出/旧日志/成功商品图片，失败商品不自动清理。

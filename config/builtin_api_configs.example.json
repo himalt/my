@@ -1,0 +1,18 @@
+﻿{
+  "deepseek": {
+    "name": "DeepSeek 文案生成",
+    "enabled": true,
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-chat",
+    "api_key": "替换为你的 DeepSeek API Key",
+    "usage": "标题生成 / 文案优化"
+  },
+  "image": {
+    "name": "Nano Banana 图生图",
+    "enabled": true,
+    "base_url": "https://api.wuyinkeji.com/api/async/image_nanoBanana2",
+    "model": "nano-banana",
+    "api_key": "替换为你的图生图 API Key",
+    "usage": "图片处理 / 图生图"
+  }
+}

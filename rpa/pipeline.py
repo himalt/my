@@ -19,15 +19,18 @@ from datetime import datetime
 import xlwt
 
 # ── 配置 ──────────────────────────────────────────────────────────────────────
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, 'apify_config.json')
 
-with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-    CONFIG = json.load(f)
+try:
+    with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+        CONFIG = json.load(f)
+except FileNotFoundError:
+    CONFIG = {}
 
-API_TOKEN        = CONFIG['apify_token']
-SEARCH_ACTOR     = CONFIG['search_actor_id'].replace('/', '~')
-DETAIL_ACTOR     = CONFIG['detail_actor_id'].replace('/', '~')
+API_TOKEN        = CONFIG.get('apify_token', '')
+SEARCH_ACTOR     = CONFIG.get('search_actor_id', '').replace('/', '~')
+DETAIL_ACTOR     = CONFIG.get('detail_actor_id', '').replace('/', '~')
 # 上货固定值
 PRICE_PLUS  = 190   # 申报价格 = 采购价 + PRICE_PLUS (CNY)
 PKG_LENGTH  = 15    # 包装尺寸 cm
@@ -52,7 +55,7 @@ ONEBOUND_BASE   = 'https://api-gw.onebound.cn'
 ONEBOUND_KEY    = CONFIG.get('onebound_key', '')
 ONEBOUND_SECRET = CONFIG.get('onebound_secret', '')
 
-DATA_DIR            = os.path.join(BASE_DIR, 'data')
+DATA_DIR            = os.path.abspath(os.getenv('RPA_DATA_DIR') or os.getenv('UPLOAD_ASSISTANT_DATA_DIR') or os.path.join(BASE_DIR, 'data'))
 IMAGES_DIR          = os.path.join(DATA_DIR, 'images')
 COLLECTED_PATH      = os.path.join(DATA_DIR, 'collected_ids.json')
 PROD_NO_COUNTER_PATH = os.path.join(DATA_DIR, 'prod_no_counter.json')

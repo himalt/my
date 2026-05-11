@@ -5,11 +5,14 @@ import base64
 import json
 import csv
 import mimetypes
+import hashlib
+import math
 import re
 import shutil
 import subprocess
 import sqlite3
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -17,7 +20,7 @@ import urllib.request
 from html import escape, unescape
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +28,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from openpyxl import Workbook, load_workbook
+import xlrd
 
 def resolve_resource_dir() -> Path:
     frozen_base = getattr(sys, "_MEIPASS", None)
@@ -47,129 +51,45 @@ DB_PATH = Path(os.environ.get("UPLOAD_ASSISTANT_DB", DATA_DIR / "app.db"))
 FRONTEND_DIR = RESOURCE_DIR / "frontend"
 STATIC_DIR = FRONTEND_DIR / "static"
 RELEASE_DIR = BASE_DIR / "release"
+LOCAL_DATA_DIRECTORIES = {
+    "data": DATA_DIR,
+    "database_parent": DB_PATH.parent,
+    "images": IMAGE_DIR,
+    "logs": DATA_DIR / "logs",
+    "exports": DATA_DIR / "export",
+    "collection_requests": DATA_DIR / "collection_requests",
+    "collection_results": DATA_DIR / "collection_results",
+    "imports": DATA_DIR / "imports",
+    "templates": DATA_DIR / "templates",
+    "uploads": DATA_DIR / "uploads",
+    "rpa_images": DATA_DIR / "rpa_images",
+}
 WINDOWS_APP_COS_URL = "https://temutp423-1320875862.cos.ap-beijing.myqcloud.com/temu/release/upload-assistant-windows.zip"
 SCRIPT_SOURCE_DIR = Path(r"C:\Users\zyf\.accio\accounts\1753260534\agents\MID-27260534U1775454-06F6F0-2183-EB2CBD\project")
 NANOBANANA_SUBMIT_URL = "https://api.wuyinkeji.com/api/async/image_nanoBanana2"
 NANOBANANA_DETAIL_URL = "https://api.wuyinkeji.com/api/async/detail"
+BUILTIN_API_CONFIGS_PATH = Path(os.environ.get("UPLOAD_ASSISTANT_BUILTIN_API_CONFIGS", RESOURCE_DIR / "config" / "builtin_api_configs.json"))
+BUILTIN_SETTINGS_PATH = Path(os.environ.get("UPLOAD_ASSISTANT_BUILTIN_SETTINGS", RESOURCE_DIR / "config" / "builtin_settings.json"))
 DEFAULT_IMAGE_PROMPT = "纯白底，仅商品本身，无模特，无人体部位。平铺拍摄，影棚照明，干净产品图，高分辨率。保留商品结构细节，去掉腰带及可拆卸配饰。背景色纯白#FFFFFF。"
 VISION_CACHE_VERSION = "doubao-color-v2"
+COLLECTION_TASK_QUEUE_LOCK = threading.Lock()
+COLLECTION_TASK_QUEUE_ACTIVE = False
+COLLECTION_IMPORT_TASK_QUEUE_LOCK = threading.Lock()
+COLLECTION_IMPORT_TASK_QUEUE_ACTIVE = False
+COLLECTION_IMAGE_TASK_QUEUE_LOCK = threading.Lock()
+COLLECTION_IMAGE_TASK_QUEUE_ACTIVE = False
+PROCESSING_TITLE_TASK_QUEUE_LOCK = threading.Lock()
+PROCESSING_TITLE_TASK_QUEUE_ACTIVE = False
+PROCESSING_FIELD_TASK_QUEUE_LOCK = threading.Lock()
+PROCESSING_FIELD_TASK_QUEUE_ACTIVE = False
+COLLECTION_TARGET_MAX = 200
+COLLECTION_BATCH_TARGET_MAX = 1000
+ONEBOUND_PAGE_SIZE_MAX = 50
 
-COLOR_ALIAS_ENTRIES = [
-    ("black", "Black"),
-    ("\u9ed1", "Black"),
-    ("\u9ed1\u8272", "Black"),
-    ("\u7eaf\u9ed1", "Black"),
-    ("blk", "Black"),
-    ("white", "White"),
-    ("\u767d", "White"),
-    ("\u767d\u8272", "White"),
-    ("\u7eaf\u767d", "White"),
-    ("ivory", "White"),
-    ("\u7c73\u767d", "White"),
-    ("\u8c61\u7259\u767d", "White"),
-    ("beige", "Beige"),
-    ("\u7c73\u8272", "Beige"),
-    ("\u674f\u8272", "Beige"),
-    ("\u674f", "Beige"),
-    ("apricot", "Beige"),
-    ("cream", "Beige"),
-    ("\u5976\u6cb9\u8272", "Beige"),
-    ("khaki", "Khaki"),
-    ("\u5361\u5176", "Khaki"),
-    ("\u5361\u5176\u8272", "Khaki"),
-    ("camel", "Khaki"),
-    ("\u9a7c\u8272", "Khaki"),
-    ("brown", "Brown"),
-    ("\u68d5\u8272", "Brown"),
-    ("\u68d5", "Brown"),
-    ("\u5496\u5561\u8272", "Brown"),
-    ("coffee", "Brown"),
-    ("chocolate", "Brown"),
-    ("\u5de7\u514b\u529b\u8272", "Brown"),
-    ("gray", "Grey"),
-    ("grey", "Grey"),
-    ("\u7070", "Grey"),
-    ("\u7070\u8272", "Grey"),
-    ("lightgray", "Grey"),
-    ("\u6d45\u7070", "Grey"),
-    ("darkgray", "Grey"),
-    ("\u6df1\u7070", "Grey"),
-    ("silvergray", "Grey"),
-    ("red", "Red"),
-    ("\u7ea2", "Red"),
-    ("\u7ea2\u8272", "Red"),
-    ("winered", "Red"),
-    ("\u9152\u7ea2", "Red"),
-    ("burgundy", "Red"),
-    ("\u67a3\u7ea2", "Red"),
-    ("\u73ab\u7ea2", "Red"),
-    ("rosered", "Red"),
-    ("pink", "Pink"),
-    ("\u7c89", "Pink"),
-    ("\u7c89\u8272", "Pink"),
-    ("\u6d45\u7c89", "Pink"),
-    ("\u85d5\u7c89", "Pink"),
-    ("hotpink", "Pink"),
-    ("\u6843\u7ea2", "Pink"),
-    ("orange", "Orange"),
-    ("\u6a59", "Orange"),
-    ("\u6a59\u8272", "Orange"),
-    ("\u6854\u8272", "Orange"),
-    ("yellow", "Yellow"),
-    ("\u9ec4", "Yellow"),
-    ("\u9ec4\u8272", "Yellow"),
-    ("\u59dc\u9ec4", "Yellow"),
-    ("\u660e\u9ec4", "Yellow"),
-    ("gold", "Gold"),
-    ("\u91d1\u8272", "Gold"),
-    ("\u91d1", "Gold"),
-    ("green", "Green"),
-    ("\u7eff", "Green"),
-    ("\u7eff\u8272", "Green"),
-    ("armygreen", "Green"),
-    ("\u519b\u7eff", "Green"),
-    ("olive", "Green"),
-    ("\u6a44\u6984\u7eff", "Green"),
-    ("mintgreen", "Green"),
-    ("\u8584\u8377\u7eff", "Green"),
-    ("\u58a8\u7eff", "Green"),
-    ("\u6d45\u7eff", "Green"),
-    ("\u6df1\u7eff", "Green"),
-    ("blue", "Blue"),
-    ("\u84dd", "Blue"),
-    ("\u84dd\u8272", "Blue"),
-    ("navy", "Blue"),
-    ("navyblue", "Blue"),
-    ("\u85cf\u9752", "Blue"),
-    ("\u85cf\u84dd", "Blue"),
-    ("\u6df1\u84dd", "Blue"),
-    ("skyblue", "Blue"),
-    ("\u5929\u84dd", "Blue"),
-    ("lightblue", "Blue"),
-    ("\u6d45\u84dd", "Blue"),
-    ("denimblue", "Blue"),
-    ("\u725b\u4ed4\u84dd", "Blue"),
-    ("\u5b9d\u84dd", "Blue"),
-    ("\u6e56\u84dd", "Blue"),
-    ("purple", "Purple"),
-    ("\u7d2b", "Purple"),
-    ("\u7d2b\u8272", "Purple"),
-    ("lavender", "Purple"),
-    ("\u85b0\u8863\u8349\u7d2b", "Purple"),
-    ("violet", "Purple"),
-    ("\u6d45\u7d2b", "Purple"),
-    ("\u6df1\u7d2b", "Purple"),
-    ("silver", "Silver"),
-    ("\u94f6\u8272", "Silver"),
-    ("\u94f6", "Silver"),
-    ("multi", "Multicolor"),
-    ("multicolor", "Multicolor"),
-    ("\u5f69\u8272", "Multicolor"),
-    ("\u82b1\u8272", "Multicolor"),
-    ("\u62fc\u8272", "Multicolor"),
-    ("clear", "Clear"),
-    ("\u900f\u660e", "Clear"),
-]
+PLATFORM_COLOR_GROUPS = [("白色系", ["白色", "米白色", "乳白色", "象牙白"]), ("红色系", ["红色", "桔红色", "玫红色", "粉红色", "桃色", "蔷薇色", "深粉红", "胭脂色", "藕色", "西瓜红", "酒红色", "猩红色", "亮粉色", "洋红色", "珊瑚色", "橙红色", "砖红色", "深红色"]), ("黑色系", ["黑色"]), ("花色系", ["花色"]), ("黄色系", ["卡其色", "姜黄色", "明黄色", "杏色", "柠檬黄", "荧光黄", "金色", "香槟色", "黄色", "浅黄色", "小麦色", "橙色", "土黄色", "向日葵色", "肤色"]), ("灰色系", ["深灰色", "浅灰色", "奶奶灰", "灰色", "铅色", "石板灰", "银灰色", "深空灰", "石墨色"]), ("蓝色系", ["天蓝色", "孔雀蓝", "宝蓝色", "浅蓝色", "蓝色", "湖蓝色", "亮钢蓝", "道奇蓝", "深天蓝", "军服蓝", "蔚蓝色", "淡青色", "青色", "暗青色", "藏青色", "粉蓝色", "海蓝色", "中蓝色", "深蓝色"]), ("绿色系", ["军绿色", "墨绿色", "浅绿色", "绿色", "翠绿色", "孔雀绿", "荧光绿", "绿黄色", "草绿色", "黄绿色", "碧绿", "绿宝石", "海洋绿", "橄榄色", "橄榄绿", "抹茶色"]), ("透明系", ["透明"]), ("紫色系", ["浅紫色", "深紫色", "紫红色", "紫罗兰", "暗紫罗兰", "紫色", "深洋红色", "紫兰色", "熏衣草淡紫"]), ("棕色系", ["咖啡色", "巧克力色", "栗色", "深卡其布色", "浅棕色", "深棕色", "褐色", "棕褐色", "驼色", "橄榄棕色", "红褐色", "茶色", "亚麻色", "黄土赭色", "琥珀色", "小豆色", "焦糖色", "肉桂色", "玫瑰棕色", "玫瑰金", "古铜色"]), ("其他", ["混合色"])]
+PLATFORM_STANDARD_COLORS = [color for _, colors in PLATFORM_COLOR_GROUPS for color in colors]
+COLOR_ALIAS_ENTRIES = [("白色", "白色"), ("白", "白色"), ("米白色", "米白色"), ("米白", "米白色"), ("乳白色", "乳白色"), ("乳白", "乳白色"), ("象牙白", "象牙白"), ("红色", "红色"), ("红", "红色"), ("桔红色", "桔红色"), ("桔红", "桔红色"), ("玫红色", "玫红色"), ("玫红", "玫红色"), ("粉红色", "粉红色"), ("粉红", "粉红色"), ("桃色", "桃色"), ("桃", "桃色"), ("蔷薇色", "蔷薇色"), ("蔷薇", "蔷薇色"), ("深粉红", "深粉红"), ("胭脂色", "胭脂色"), ("胭脂", "胭脂色"), ("藕色", "藕色"), ("藕", "藕色"), ("西瓜红", "西瓜红"), ("酒红色", "酒红色"), ("酒红", "酒红色"), ("猩红色", "猩红色"), ("猩红", "猩红色"), ("亮粉色", "亮粉色"), ("亮粉", "亮粉色"), ("洋红色", "洋红色"), ("洋红", "洋红色"), ("珊瑚色", "珊瑚色"), ("珊瑚", "珊瑚色"), ("橙红色", "橙红色"), ("橙红", "橙红色"), ("砖红色", "砖红色"), ("砖红", "砖红色"), ("深红色", "深红色"), ("深红", "深红色"), ("黑色", "黑色"), ("黑", "黑色"), ("花色", "花色"), ("花", "花色"), ("卡其色", "卡其色"), ("卡其", "卡其色"), ("姜黄色", "姜黄色"), ("姜黄", "姜黄色"), ("明黄色", "明黄色"), ("明黄", "明黄色"), ("杏色", "杏色"), ("杏", "杏色"), ("柠檬黄", "柠檬黄"), ("荧光黄", "荧光黄"), ("金色", "金色"), ("金", "金色"), ("香槟色", "香槟色"), ("香槟", "香槟色"), ("黄色", "黄色"), ("黄", "黄色"), ("浅黄色", "浅黄色"), ("浅黄", "浅黄色"), ("小麦色", "小麦色"), ("小麦", "小麦色"), ("橙色", "橙色"), ("橙", "橙色"), ("土黄色", "土黄色"), ("土黄", "土黄色"), ("向日葵色", "向日葵色"), ("向日葵", "向日葵色"), ("肤色", "肤色"), ("肤", "肤色"), ("深灰色", "深灰色"), ("深灰", "深灰色"), ("浅灰色", "浅灰色"), ("浅灰", "浅灰色"), ("奶奶灰", "奶奶灰"), ("灰色", "灰色"), ("灰", "灰色"), ("铅色", "铅色"), ("铅", "铅色"), ("石板灰", "石板灰"), ("银灰色", "银灰色"), ("银灰", "银灰色"), ("深空灰", "深空灰"), ("石墨色", "石墨色"), ("石墨", "石墨色"), ("天蓝色", "天蓝色"), ("天蓝", "天蓝色"), ("孔雀蓝", "孔雀蓝"), ("宝蓝色", "宝蓝色"), ("宝蓝", "宝蓝色"), ("浅蓝色", "浅蓝色"), ("浅蓝", "浅蓝色"), ("蓝色", "蓝色"), ("蓝", "蓝色"), ("湖蓝色", "湖蓝色"), ("湖蓝", "湖蓝色"), ("亮钢蓝", "亮钢蓝"), ("道奇蓝", "道奇蓝"), ("深天蓝", "深天蓝"), ("军服蓝", "军服蓝"), ("蔚蓝色", "蔚蓝色"), ("蔚蓝", "蔚蓝色"), ("淡青色", "淡青色"), ("淡青", "淡青色"), ("青色", "青色"), ("青", "青色"), ("暗青色", "暗青色"), ("暗青", "暗青色"), ("藏青色", "藏青色"), ("藏青", "藏青色"), ("粉蓝色", "粉蓝色"), ("粉蓝", "粉蓝色"), ("海蓝色", "海蓝色"), ("海蓝", "海蓝色"), ("中蓝色", "中蓝色"), ("中蓝", "中蓝色"), ("深蓝色", "深蓝色"), ("深蓝", "深蓝色"), ("军绿色", "军绿色"), ("军绿", "军绿色"), ("墨绿色", "墨绿色"), ("墨绿", "墨绿色"), ("浅绿色", "浅绿色"), ("浅绿", "浅绿色"), ("绿色", "绿色"), ("绿", "绿色"), ("翠绿色", "翠绿色"), ("翠绿", "翠绿色"), ("孔雀绿", "孔雀绿"), ("荧光绿", "荧光绿"), ("绿黄色", "绿黄色"), ("绿黄", "绿黄色"), ("草绿色", "草绿色"), ("草绿", "草绿色"), ("黄绿色", "黄绿色"), ("黄绿", "黄绿色"), ("碧绿", "碧绿"), ("绿宝石", "绿宝石"), ("海洋绿", "海洋绿"), ("橄榄色", "橄榄色"), ("橄榄", "橄榄色"), ("橄榄绿", "橄榄绿"), ("抹茶色", "抹茶色"), ("抹茶", "抹茶色"), ("透明", "透明"), ("浅紫色", "浅紫色"), ("浅紫", "浅紫色"), ("深紫色", "深紫色"), ("深紫", "深紫色"), ("紫红色", "紫红色"), ("紫红", "紫红色"), ("紫罗兰", "紫罗兰"), ("暗紫罗兰", "暗紫罗兰"), ("紫色", "紫色"), ("紫", "紫色"), ("深洋红色", "深洋红色"), ("深洋红", "深洋红色"), ("紫兰色", "紫兰色"), ("紫兰", "紫兰色"), ("熏衣草淡紫", "熏衣草淡紫"), ("咖啡色", "咖啡色"), ("咖啡", "咖啡色"), ("巧克力色", "巧克力色"), ("巧克力", "巧克力色"), ("栗色", "栗色"), ("栗", "栗色"), ("深卡其布色", "深卡其布色"), ("深卡其布", "深卡其布色"), ("浅棕色", "浅棕色"), ("浅棕", "浅棕色"), ("深棕色", "深棕色"), ("深棕", "深棕色"), ("褐色", "褐色"), ("褐", "褐色"), ("棕褐色", "棕褐色"), ("棕褐", "棕褐色"), ("驼色", "驼色"), ("驼", "驼色"), ("橄榄棕色", "橄榄棕色"), ("橄榄棕", "橄榄棕色"), ("红褐色", "红褐色"), ("红褐", "红褐色"), ("茶色", "茶色"), ("茶", "茶色"), ("亚麻色", "亚麻色"), ("亚麻", "亚麻色"), ("黄土赭色", "黄土赭色"), ("黄土赭", "黄土赭色"), ("琥珀色", "琥珀色"), ("琥珀", "琥珀色"), ("小豆色", "小豆色"), ("小豆", "小豆色"), ("焦糖色", "焦糖色"), ("焦糖", "焦糖色"), ("肉桂色", "肉桂色"), ("肉桂", "肉桂色"), ("玫瑰棕色", "玫瑰棕色"), ("玫瑰棕", "玫瑰棕色"), ("玫瑰金", "玫瑰金"), ("古铜色", "古铜色"), ("古铜", "古铜色"), ("混合色", "混合色"), ("混合", "混合色"), ("white", "白色"), ("purewhite", "白色"), ("offwhite", "米白色"), ("milkywhite", "乳白色"), ("cream", "乳白色"), ("ivory", "象牙白"), ("red", "红色"), ("orangered", "桔红色"), ("rose red", "玫红色"), ("rosered", "玫红色"), ("pink", "粉红色"), ("hotpink", "深粉红"), ("magenta", "洋红色"), ("coral", "珊瑚色"), ("burgundy", "酒红色"), ("wine red", "酒红色"), ("winered", "酒红色"), ("scarlet", "猩红色"), ("black", "黑色"), ("blk", "黑色"), ("multi", "花色"), ("multicolor", "花色"), ("mixed", "混合色"), ("mixedcolor", "混合色"), ("khaki", "卡其色"), ("mustard", "姜黄色"), ("lemonyellow", "柠檬黄"), ("neonyellow", "荧光黄"), ("gold", "金色"), ("champagne", "香槟色"), ("yellow", "黄色"), ("lightyellow", "浅黄色"), ("wheat", "小麦色"), ("orange", "橙色"), ("earthyellow", "土黄色"), ("skin", "肤色"), ("nude", "肤色"), ("darkgray", "深灰色"), ("darkgrey", "深灰色"), ("lightgray", "浅灰色"), ("lightgrey", "浅灰色"), ("gray", "灰色"), ("grey", "灰色"), ("silvergray", "银灰色"), ("spacegray", "深空灰"), ("graphite", "石墨色"), ("skyblue", "天蓝色"), ("peacockblue", "孔雀蓝"), ("royalblue", "宝蓝色"), ("lightblue", "浅蓝色"), ("blue", "蓝色"), ("lakeblue", "湖蓝色"), ("dodgerblue", "道奇蓝"), ("deepskyblue", "深天蓝"), ("navy", "藏青色"), ("navyblue", "藏青色"), ("azure", "蔚蓝色"), ("cyan", "青色"), ("darkcyan", "暗青色"), ("powderblue", "粉蓝色"), ("oceanblue", "海蓝色"), ("mediumblue", "中蓝色"), ("darkblue", "深蓝色"), ("denimblue", "蓝色"), ("armygreen", "军绿色"), ("darkgreen", "墨绿色"), ("lightgreen", "浅绿色"), ("green", "绿色"), ("emerald", "绿宝石"), ("neongreen", "荧光绿"), ("grassgreen", "草绿色"), ("yellowgreen", "黄绿色"), ("seagreen", "海洋绿"), ("olive", "橄榄色"), ("olivegreen", "橄榄绿"), ("matcha", "抹茶色"), ("clear", "透明"), ("transparent", "透明"), ("lightpurple", "浅紫色"), ("darkpurple", "深紫色"), ("purple", "紫色"), ("violet", "紫罗兰"), ("darkviolet", "暗紫罗兰"), ("lavender", "熏衣草淡紫"), ("brown", "褐色"), ("coffee", "咖啡色"), ("chocolate", "巧克力色"), ("maroon", "栗色"), ("lightbrown", "浅棕色"), ("darkbrown", "深棕色"), ("camel", "驼色"), ("linen", "亚麻色"), ("amber", "琥珀色"), ("caramel", "焦糖色"), ("cinnamon", "肉桂色"), ("rosegold", "玫瑰金"), ("bronze", "古铜色")]
+
 MIAOSHOU_COLUMNS = [
     "*产品标题",
     "*英文标题",
@@ -199,10 +119,31 @@ MIAOSHOU_COLUMNS = [
     "发货时效（天）",
 ]
 RPA_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
-RPA_ALLOWED_UPLOAD_SIZES = {"XS", "S", "M", "L", "XL", "XXL"}
+STANDARD_UPLOAD_SIZES = ["XS", "S", "M", "L", "XL", "XXL"]
+STANDARD_UPLOAD_SIZE_RANK = {size: index for index, size in enumerate(STANDARD_UPLOAD_SIZES)}
+RPA_ALLOWED_UPLOAD_SIZES = set(STANDARD_UPLOAD_SIZES)
+SIZE_ALIAS_MAP = {
+    "XS": "XS",
+    "S": "S",
+    "M": "M",
+    "L": "L",
+    "XL": "XL",
+    "XXL": "XXL",
+    "2XL": "XXL",
+    "XXXL": "XXL",
+    "3XL": "XXL",
+    "4XL": "XXL",
+}
 
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+def ensure_runtime_directories() -> dict[str, str]:
+    created: dict[str, str] = {}
+    for key, path in LOCAL_DATA_DIRECTORIES.items():
+        path.mkdir(parents=True, exist_ok=True)
+        created[key] = str(path)
+    return created
+
+
+ensure_runtime_directories()
 
 app = FastAPI(title="上货助手", version="0.1.0")
 app.add_middleware(
@@ -222,7 +163,11 @@ class Product(BaseModel):
     sku_summary: str
     main_image: Optional[str] = None
     purchase_price: float = 0
+    platform_quote_price: float = 0
+    weight_g: int = 0
     first_mile: float = 0
+    warehouse_fee: float = 15
+    last_mile: float = 0
     platform_cost: float = 0
     total_cost: float = 0
     estimated_profit: float = 0
@@ -237,9 +182,55 @@ class ProductPayload(BaseModel):
     skc: str
     sku_summary: str = ""
     purchase_price: float = 0
+    platform_quote_price: float = 0
+    weight_g: int = 0
     first_mile: float = 0
+    warehouse_fee: float = 15
+    last_mile: float = 0
     platform_cost: float = 0
     status: str = "利润正常"
+
+
+class QuoteImportPayload(BaseModel):
+    text: str
+
+
+class QuoteImportResult(BaseModel):
+    updated_count: int = 0
+    unmatched_count: int = 0
+    invalid_count: int = 0
+    duplicate_count: int = 0
+    rows_count: int = 0
+    unmatched: list[dict[str, object]] = []
+    invalid: list[dict[str, object]] = []
+    duplicates: list[str] = []
+
+
+class FreightImportResult(BaseModel):
+    first_mile_count: int = 0
+    last_mile_count: int = 0
+    default_zone: str = "zone5"
+    saved: bool = False
+
+
+class FreightFirstMileRule(BaseModel):
+    channel: str = "空运"
+    max_weight_g: int
+    price_per_kg: float
+    fixed_fee: float = 0
+
+
+class FreightLastMileRule(BaseModel):
+    channel: str = "尾程"
+    max_weight_g: int
+    zones: dict[str, float]
+
+
+class FreightRulesPayload(BaseModel):
+    default_zone: str = "zone5"
+    warehouse_fee: float = 15
+    first_mile: list[FreightFirstMileRule] = []
+    last_mile: list[FreightLastMileRule] = []
 
 
 
@@ -267,6 +258,14 @@ class CollectionItemPayload(BaseModel):
     image_url: str = ""
 
 
+class CollectionItemPage(BaseModel):
+    items: list[CollectionItem]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
 class CollectionTask(BaseModel):
     id: int
     keyword: str
@@ -281,6 +280,9 @@ class CollectionTask(BaseModel):
     note: str = ""
     request_path: str = ""
     result_count: int = 0
+    parent_task_id: int = 0
+    batch_index: int = 1
+    batch_total: int = 1
     created_at: str
     updated_at: str
 
@@ -294,6 +296,19 @@ class CollectionTaskPayload(BaseModel):
     min_price: float = 0
     max_price: float = 0
     blacklist: str = ""
+
+
+class CollectionTaskEvent(BaseModel):
+    id: int
+    task_id: int
+    stage: str
+    status: str
+    message: str = ""
+    page_no: int = 0
+    parsed_count: int = 0
+    imported_count: int = 0
+    skipped_count: int = 0
+    created_at: str
 
 
 class CollectionImportResult(BaseModel):
@@ -324,6 +339,28 @@ class ImportCollectionPayload(BaseModel):
     ids: list[int]
 
 
+class CollectionImportTask(BaseModel):
+    id: int
+    status: str
+    total_count: int = 0
+    processed_count: int = 0
+    imported_count: int = 0
+    skipped_count: int = 0
+    failed_count: int = 0
+    imported_product_ids: list[int] = []
+    note: str = ""
+    created_at: str
+    updated_at: str
+
+
+class CollectionImageTaskStatus(BaseModel):
+    queued_count: int = 0
+    running_count: int = 0
+    completed_count: int = 0
+    failed_count: int = 0
+    active: bool = False
+
+
 class CollectionBulkPayload(BaseModel):
     ids: list[int]
 
@@ -335,6 +372,107 @@ class ProductBulkStatusPayload(BaseModel):
 
 class GenerateTitlePayload(BaseModel):
     product_id: int
+
+
+class BulkGenerateTitlePayload(BaseModel):
+    ids: list[int]
+
+
+class BulkGenerateTitleItemResult(BaseModel):
+    product_id: int
+    ok: bool
+    chinese_title: str = ""
+    english_title: str = ""
+    error: str = ""
+
+
+class BulkGenerateTitleResult(BaseModel):
+    success_count: int
+    failed_count: int
+    results: list[BulkGenerateTitleItemResult]
+
+
+class ProcessingTitleTask(BaseModel):
+    id: int
+    status: str
+    ids_json: str = "[]"
+    failed_ids_json: str = "[]"
+    total_count: int = 0
+    processed_count: int = 0
+    success_count: int = 0
+    failed_count: int = 0
+    cache_hit_count: int = 0
+    note: str = ""
+    created_at: str
+    updated_at: str
+
+
+class ProcessingFieldTask(BaseModel):
+    id: int
+    status: str
+    failed_ids_json: str = "[]"
+    total_count: int = 0
+    processed_count: int = 0
+    success_count: int = 0
+    failed_count: int = 0
+    note: str = ""
+    created_at: str
+    updated_at: str
+
+
+class ProcessingTaskHistoryItem(BaseModel):
+    id: int
+    task_type: str
+    task_label: str
+    status: str
+    total_count: int = 0
+    processed_count: int = 0
+    success_count: int = 0
+    failed_count: int = 0
+    cache_hit_count: int = 0
+    retryable_count: int = 0
+    note: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class ProcessingTaskHistoryPage(BaseModel):
+    items: list[ProcessingTaskHistoryItem]
+    total: int = 0
+    page: int = 1
+    page_size: int = 20
+    total_pages: int = 1
+
+
+class ProcessingExceptionItem(BaseModel):
+    product_id: int
+    skc: str = ""
+    title: str = ""
+    status: str = "open"
+    issues: list[str] = []
+    warnings: list[str] = []
+    updated_at: str = ""
+
+
+class SpecAliasItem(BaseModel):
+    id: int = 0
+    kind: str
+    alias: str
+    target: str
+    updated_at: str = ""
+
+
+class SpecAliasPayload(BaseModel):
+    kind: str
+    alias: str
+    target: str
+
+
+class SpecExceptionSummaryItem(BaseModel):
+    kind: str
+    value: str
+    count: int = 0
+    product_ids: list[int] = []
 
 
 class ProcessImagePayload(BaseModel):
@@ -387,6 +525,8 @@ class ManualDetailImageAssignmentPayload(BaseModel):
     product_id: int
     slot_index: int
     image_url: str = ""
+    remove_image_url: str = ""
+    remaining_image_urls: list[str] = []
 
 
 class DedupeProcessingImagesPayload(BaseModel):
@@ -455,6 +595,7 @@ class ProcessingItemPayload(BaseModel):
     size: str = ""
     sku_code: str = ""
     declared_price: float = 0
+    declared_price_mode: str = "set"
     weight_g: int = 350
     length_cm: int = 15
     width_cm: int = 10
@@ -479,6 +620,10 @@ class UploadTask(BaseModel):
     failed_count: int = 0
     export_path: str = ""
     run_log: str = ""
+    failure_stage: str = ""
+    failure_reason: str = ""
+    evidence_path: str = ""
+    retry_count: int = 0
     executor_id: str = ""
     claimed_at: str = ""
     heartbeat_at: str = ""
@@ -495,6 +640,17 @@ class ExecutorHeartbeatPayload(BaseModel):
     executor_id: str = ""
 
 
+class ExecutorStatus(BaseModel):
+    online: bool = False
+    executor_id: str = ""
+    status: str = "offline"
+    message: str = ""
+    task_id: int = 0
+    updated_at: str = ""
+    pending_result_count: int = 0
+    status_path: str = ""
+
+
 class ExecutorReportPayload(BaseModel):
     executor_id: str = ""
     status: str
@@ -502,6 +658,20 @@ class ExecutorReportPayload(BaseModel):
     failed_count: int = 0
     run_log: str = ""
     stdout: str = ""
+    failure_stage: str = ""
+    failure_reason: str = ""
+    evidence_path: str = ""
+
+
+class RetryFailedUploadPayload(BaseModel):
+    ids: list[int] = []
+
+
+class CleanupPayload(BaseModel):
+    retention_days: int = 7
+    clean_success_images: bool = True
+    clean_exports: bool = True
+    clean_logs: bool = True
 
 
 class PublishRecord(BaseModel):
@@ -552,7 +722,10 @@ class PromptTemplatePayload(BaseModel):
 
 
 def configured_script_dir() -> Path:
-    configured = get_setting_value("script_dir", str(SCRIPT_SOURCE_DIR)).strip()
+    default_script_dir = BASE_DIR / "rpa" if (BASE_DIR / "rpa").exists() else SCRIPT_SOURCE_DIR
+    configured = get_setting_value("script_dir", str(default_script_dir)).strip()
+    if configured == str(SCRIPT_SOURCE_DIR) and (BASE_DIR / "rpa").exists():
+        return BASE_DIR / "rpa"
     return Path(configured) if configured else SCRIPT_SOURCE_DIR
 
 
@@ -561,7 +734,7 @@ def legacy_rpa_config() -> dict[str, object]:
     if not config_path.exists():
         return {}
     try:
-        data = json.loads(config_path.read_text(encoding="utf-8"))
+        data = json.loads(config_path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -595,6 +768,82 @@ def cos_preflight() -> dict[str, object]:
         "secret_id_configured": bool(cos_setting_value("cos_secret_id")),
         "secret_key_configured": bool(cos_setting_value("cos_secret_key")),
     }
+
+
+def cos_public_image_base() -> str:
+    if upload_image_source() != "cos":
+        return ""
+    region = cos_setting_value("cos_region")
+    bucket = cos_setting_value("cos_bucket")
+    if not region or not bucket:
+        return ""
+    return f"https://{bucket}.cos.{region}.myqcloud.com"
+
+
+def cos_public_image_url(*segments: str) -> str:
+    base = cos_public_image_base()
+    if not base:
+        return ""
+    prefix = cos_setting_value("cos_prefix").strip().strip("/")
+    path_parts = [part for part in [*prefix.split("/"), *segments] if str(part or "").strip()]
+    encoded_path = "/".join(urllib.parse.quote(str(part).strip(), safe="") for part in path_parts)
+    return f"{base}/{encoded_path}" if encoded_path else base
+
+
+def cos_required_settings() -> dict[str, str]:
+    values = {
+        "region": cos_setting_value("cos_region"),
+        "bucket": cos_setting_value("cos_bucket"),
+        "prefix": cos_setting_value("cos_prefix").strip().strip("/"),
+        "secret_id": cos_setting_value("cos_secret_id"),
+        "secret_key": cos_setting_value("cos_secret_key"),
+    }
+    missing = [label for key, label in [("region", "COS Region"), ("bucket", "COS Bucket"), ("secret_id", "COS SecretId"), ("secret_key", "COS SecretKey")] if not values[key]]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"COS 模式导出前必须配置：{'、'.join(missing)}")
+    return values
+
+
+def build_cos_client(region: str, secret_id: str, secret_key: str):
+    try:
+        from qcloud_cos import CosConfig, CosS3Client
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="当前环境未安装 COS SDK，请先安装 cos-python-sdk-v5") from exc
+    config = CosConfig(Region=region, SecretId=secret_id, SecretKey=secret_key, Scheme="https")
+    return CosS3Client(config)
+
+
+def cos_object_key(prefix: str, *segments: str) -> str:
+    parts = [part for part in [*prefix.strip("/").split("/"), *segments] if str(part or "").strip()]
+    return "/".join(str(part).strip().strip("/") for part in parts)
+
+
+def sync_rpa_images_to_cos(items: list[ProcessingItem]) -> dict[str, int]:
+    settings = cos_required_settings()
+    root = configured_rpa_sku_image_dir()
+    safe_skc_values = {safe_path_segment(item.skc, f"product_{item.product_id}") for item in items}
+    if not root.exists():
+        raise HTTPException(status_code=400, detail="COS 模式导出前未生成本地 RPA 图片目录")
+    client = build_cos_client(settings["region"], settings["secret_id"], settings["secret_key"])
+    uploaded_count = 0
+    failed: list[str] = []
+    for product_dir in sorted(root.iterdir()):
+        if not product_dir.is_dir() or product_dir.name not in safe_skc_values:
+            continue
+        for image_path in sorted(product_dir.rglob("*")):
+            if not image_path.is_file() or image_path.suffix.lower() not in RPA_IMAGE_EXTENSIONS:
+                continue
+            relative_parts = image_path.relative_to(product_dir).parts
+            key = cos_object_key(settings["prefix"], product_dir.name, *relative_parts)
+            try:
+                with image_path.open("rb") as file:
+                    client.put_object(Bucket=settings["bucket"], Body=file, Key=key)
+                uploaded_count += 1
+            except Exception as exc:
+                failed.append(f"{key}: {exc}")
+    if failed:
+        raise HTTPException(status_code=502, detail=f"COS 图片上传失败：{failed[0]}")
+    return {"uploaded_count": uploaded_count, "failed_count": 0}
 
 
 def upload_rpa_command(export_path: str) -> list[str]:
@@ -665,6 +914,127 @@ DEFAULT_PROMPT_TEMPLATES = [
     ("\u725b\u4ed4\u77ed\u88e4\u4e3b\u56fe\u7cbe\u4fee", "\u5973\u88c5\u77ed\u88e4", "\u56fe\u751f\u56fe\u63d0\u793a\u8bcd", "\u4e3b\u56fe\u4f18\u5316", "\u4fdd\u7559\u5546\u54c1\u4e3b\u4f53\uff0c\u4f18\u5316\u5149\u7ebf\u3001\u8d28\u611f\u548c\u80cc\u666f\uff0c\u4e0d\u6539\u53d8\u5546\u54c1\u6b3e\u5f0f\u3002", "\u542f\u7528\u4e2d"),
     ("\u5546\u54c1\u989c\u8272\u56fe\u7247\u8bc6\u522b", "\u901a\u7528\u5546\u54c1", "\u56fe\u7247\u8bc6\u522b\u63d0\u793a\u8bcd", "\u989c\u8272\u5206\u56fe", DEFAULT_IMAGE_RECOGNITION_PROMPT, "\u542f\u7528\u4e2d"),
 ]
+DEFAULT_PROMPT_TEMPLATE_KEYS = {(name, category, prompt_type, usage) for name, category, prompt_type, usage, _content, _status in DEFAULT_PROMPT_TEMPLATES}
+DEFAULT_PROMPT_TEMPLATE_KEYS.add(("服饰中英文标题生成", "服饰通用", "标题提示词", "标题生成"))
+
+
+DEFAULT_API_CONFIGS = {
+    "deepseek": {
+        "name": "DeepSeek 文案生成",
+        "enabled": True,
+        "base_url": "https://api.deepseek.com",
+        "model": "deepseek-chat",
+        "api_key": "",
+        "usage": "标题生成 / 文案优化",
+    },
+    "image": {
+        "name": "Nano Banana 图生图",
+        "enabled": True,
+        "base_url": NANOBANANA_SUBMIT_URL,
+        "model": "nano-banana",
+        "api_key": "",
+        "usage": "图片处理 / 图生图",
+    },
+}
+
+
+def load_builtin_api_configs() -> dict[str, dict[str, object]]:
+    configs = {key: dict(value) for key, value in DEFAULT_API_CONFIGS.items()}
+    if not BUILTIN_API_CONFIGS_PATH.exists():
+        return configs
+    try:
+        raw = json.loads(BUILTIN_API_CONFIGS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return configs
+    if not isinstance(raw, dict):
+        return configs
+    for key, value in raw.items():
+        if isinstance(value, dict):
+            current = configs.get(str(key), {})
+            current.update(value)
+            configs[str(key)] = current
+    return configs
+
+
+def sync_builtin_api_configs(db: sqlite3.Connection, force_keys: set[str] | None = None) -> None:
+    timestamp = now_text()
+    force_keys = force_keys or set()
+    for key, config in load_builtin_api_configs().items():
+        api_key = str(config.get("api_key") or "").strip()
+        if not api_key and key not in DEFAULT_API_CONFIGS:
+            continue
+        row = db.execute("SELECT * FROM api_configs WHERE key = ?", (key,)).fetchone()
+        should_update_secret = bool(api_key) and (key in force_keys or not row or not str(row["api_key"] or "").strip())
+        if row:
+            db.execute(
+                """
+                UPDATE api_configs
+                SET name = ?, enabled = ?, base_url = ?, model = ?, api_key = CASE WHEN ? THEN ? ELSE api_key END,
+                    usage = ?, updated_at = ?
+                WHERE key = ?
+                """,
+                (
+                    str(config.get("name") or row["name"] or key),
+                    int(bool(config.get("enabled", True))),
+                    str(config.get("base_url") or row["base_url"] or ""),
+                    str(config.get("model") or row["model"] or ""),
+                    int(should_update_secret),
+                    api_key,
+                    str(config.get("usage") or row["usage"] or ""),
+                    timestamp,
+                    key,
+                ),
+            )
+        else:
+            db.execute(
+                "INSERT INTO api_configs (key, name, enabled, base_url, model, api_key, usage, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    key,
+                    str(config.get("name") or key),
+                    int(bool(config.get("enabled", True))),
+                    str(config.get("base_url") or ""),
+                    str(config.get("model") or ""),
+                    api_key,
+                    str(config.get("usage") or ""),
+                    timestamp,
+                ),
+            )
+
+
+def load_builtin_settings() -> dict[str, str]:
+    if not BUILTIN_SETTINGS_PATH.exists():
+        return {}
+    try:
+        raw = json.loads(BUILTIN_SETTINGS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    settings: dict[str, str] = {}
+    for key, value in raw.items():
+        if value is None:
+            continue
+        settings[str(key)] = str(value)
+    return settings
+
+
+def sync_builtin_settings(db: sqlite3.Connection, force_keys: set[str] | None = None) -> None:
+    timestamp = now_text()
+    force_keys = force_keys or set()
+    for key, value in load_builtin_settings().items():
+        clean_value = str(value or "").strip()
+        if not clean_value:
+            continue
+        row = db.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+        if row and key not in force_keys and str(row["value"] or "").strip():
+            continue
+        db.execute(
+            """
+            INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+            """,
+            (key, clean_value, timestamp),
+        )
 
 
 def looks_corrupted_text(value: str) -> bool:
@@ -686,8 +1056,20 @@ def now_text() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def chunked_ids(ids: list[int], size: int = 800) -> list[list[int]]:
+    return [ids[index:index + size] for index in range(0, len(ids), size)]
+
+
 def product_from_row(row: sqlite3.Row) -> Product:
-    return Product(**dict(row))
+    data = dict(row)
+    data.setdefault("platform_quote_price", 0)
+    data.setdefault("weight_g", 0)
+    data.setdefault("warehouse_fee", 15)
+    data.setdefault("last_mile", data.get("platform_cost", 0))
+    if float(data.get("platform_quote_price") or 0) <= 0:
+        data["estimated_profit"] = 0
+        data["gross_margin"] = 0
+    return Product(**data)
 
 
 def collection_item_from_row(row: sqlite3.Row) -> CollectionItem:
@@ -698,6 +1080,609 @@ def collection_item_from_row(row: sqlite3.Row) -> CollectionItem:
 
 def collection_task_from_row(row: sqlite3.Row) -> CollectionTask:
     return CollectionTask(**dict(row))
+
+
+def collection_task_event_from_row(row: sqlite3.Row) -> CollectionTaskEvent:
+    return CollectionTaskEvent(**dict(row))
+
+
+
+def collection_task_batches(total_count: int) -> list[int]:
+    total_count = max(1, min(int(total_count or 1), COLLECTION_BATCH_TARGET_MAX))
+    batches: list[int] = []
+    remaining = total_count
+    while remaining > 0:
+        batch_count = min(COLLECTION_TARGET_MAX, remaining)
+        batches.append(batch_count)
+        remaining -= batch_count
+    return batches
+def collection_import_task_from_row(row: sqlite3.Row) -> CollectionImportTask:
+    data = dict(row)
+    note = str(data.get("note") or "")
+    match = re.search(r"imported_product_ids=([^;]+)", note)
+    if match:
+        data["imported_product_ids"] = [int(value) for value in match.group(1).split(",") if value.strip().isdigit()]
+    return CollectionImportTask(**data)
+
+
+def processing_title_task_from_row(row: sqlite3.Row) -> ProcessingTitleTask:
+    return ProcessingTitleTask(**dict(row))
+
+
+def processing_field_task_from_row(row: sqlite3.Row) -> ProcessingFieldTask:
+    return ProcessingFieldTask(**dict(row))
+
+
+class CollectionTaskCancelled(Exception):
+    pass
+
+
+def collection_task_is_cancel_requested(task_id: int) -> bool:
+    with connect() as db:
+        row = db.execute("SELECT status FROM collection_tasks WHERE id = ?", (task_id,)).fetchone()
+    return bool(row and row["status"] == "cancel_requested")
+
+
+def raise_if_collection_task_cancelled(task_id: int | None) -> None:
+    if task_id and collection_task_is_cancel_requested(task_id):
+        raise CollectionTaskCancelled()
+
+
+
+
+def schedule_collection_task_execution(task_id: int) -> None:
+    global COLLECTION_TASK_QUEUE_ACTIVE
+    with connect() as db:
+        row = db.execute("SELECT status FROM collection_tasks WHERE id = ?", (task_id,)).fetchone()
+        if row and row["status"] not in {"queued", "running"}:
+            db.execute("UPDATE collection_tasks SET status = ?, updated_at = ? WHERE id = ?", ("queued", now_text(), task_id))
+            add_collection_task_event(db, task_id, "queued", "info", "\u4efb\u52a1\u5df2\u52a0\u5165\u91c7\u96c6\u961f\u5217")
+    with COLLECTION_TASK_QUEUE_LOCK:
+        if COLLECTION_TASK_QUEUE_ACTIVE:
+            return
+        COLLECTION_TASK_QUEUE_ACTIVE = True
+    thread = threading.Thread(target=run_collection_task_queue_worker, daemon=True)
+    thread.start()
+
+
+
+def resume_collection_task_queue() -> None:
+    with connect() as db:
+        stale_running = db.execute(
+            "UPDATE collection_tasks SET status = 'queued', updated_at = ? WHERE status = 'running' AND mode = '1688'",
+            (now_text(),),
+        ).rowcount
+        row = db.execute("SELECT id FROM collection_tasks WHERE status = 'queued' AND mode = '1688' ORDER BY id ASC LIMIT 1").fetchone()
+        if stale_running:
+            add_collection_task_event(db, int(row["id"]) if row else 0, "resume", "info", f"reset stale running tasks: {stale_running}") if row else None
+    if row:
+        schedule_collection_task_execution(int(row["id"]))
+
+def run_collection_task_queue_worker() -> None:
+    global COLLECTION_TASK_QUEUE_ACTIVE
+    try:
+        while True:
+            with connect() as db:
+                row = db.execute(
+                    "SELECT * FROM collection_tasks WHERE status = 'queued' AND mode = '1688' ORDER BY id ASC LIMIT 1"
+                ).fetchone()
+            if not row:
+                break
+            run_collection_task_background(int(row["id"]))
+    finally:
+        with COLLECTION_TASK_QUEUE_LOCK:
+            COLLECTION_TASK_QUEUE_ACTIVE = False
+        with connect() as db:
+            row = db.execute(
+                "SELECT id FROM collection_tasks WHERE status = 'queued' AND mode = '1688' ORDER BY id ASC LIMIT 1"
+            ).fetchone()
+        if row:
+            schedule_collection_task_execution(int(row["id"]))
+
+
+def run_collection_task_background(task_id: int) -> None:
+    with connect() as db:
+        row = db.execute("SELECT * FROM collection_tasks WHERE id = ?", (task_id,)).fetchone()
+        if not row or row["mode"] != "1688":
+            return
+        if row["status"] not in {"queued", "running", "cancel_requested"}:
+            return
+        if row["status"] == "cancel_requested":
+            note = "采集任务已取消，未开始执行"
+            db.execute("UPDATE collection_tasks SET status = ?, note = ?, updated_at = ? WHERE id = ?", ("cancelled", note, now_text(), task_id))
+            add_collection_task_event(db, task_id, "cancelled", "info", note)
+            return
+        db.execute("UPDATE collection_tasks SET status = ?, updated_at = ? WHERE id = ?", ("running", now_text(), task_id))
+        add_collection_task_event(db, task_id, "background_start", "running", "\u91c7\u96c6\u4efb\u52a1\u5f00\u59cb\u6267\u884c")
+        payload = CollectionTaskPayload(
+            keyword=row["keyword"],
+            source=row["source"],
+            mode=row["mode"],
+            collector=row["collector"],
+            target_count=row["target_count"],
+            min_price=row["min_price"],
+            max_price=row["max_price"],
+            blacklist=row["blacklist"],
+        )
+        skipped = 0
+        try:
+            provider = "onebound" if get_setting_value("onebound_key") and get_setting_value("onebound_secret") else "1688_cookie"
+            add_collection_task_event(db, task_id, "execute", "running", f"\u5f00\u59cb\u91c7\u96c6\uff1a\u6765\u6e90={provider}\uff0c\u76ee\u6807={payload.target_count} \u6761")
+            rows = run_onebound_1688_search(payload, task_id) if provider == "onebound" else run_1688_public_search(payload, task_id)
+            raise_if_collection_task_cancelled(task_id)
+            imported, skipped = insert_collection_rows_with_db(db, normalize_collection_rows(rows), row["source"])
+            add_collection_task_event(db, task_id, "write", "success" if imported else "info", f"\u89e3\u6790 {len(rows)} \u6761\uff0c\u65b0\u589e {imported} \u6761\uff0c\u8df3\u8fc7 {skipped} \u6761", parsed_count=len(rows), imported_count=imported, skipped_count=skipped)
+            status = "completed" if imported else "empty"
+            note = f"{provider} \u91c7\u96c6\u5b8c\u6210\uff1a\u89e3\u6790 {len(rows)} \u6761\uff0c\u65b0\u589e {imported} \u6761\uff0c\u8df3\u8fc7 {skipped} \u6761\u3002"
+        except HTTPException as exc:
+            status = "failed"
+            imported = 0
+            note = str(exc.detail)
+            add_collection_task_event(db, task_id, "error", "error", note)
+        except CollectionTaskCancelled:
+            status = "cancelled"
+            imported = 0
+            note = "采集任务已取消，已停止后续写入"
+            add_collection_task_event(db, task_id, "cancelled", "info", note)
+        db.execute("UPDATE collection_tasks SET status = ?, collector = ?, note = ?, result_count = ?, updated_at = ? WHERE id = ?", (status, "1688_public_search", note, imported, now_text(), task_id))
+        add_collection_task_event(db, task_id, "finished", "success" if imported else "info", note, imported_count=imported, skipped_count=skipped)
+
+
+def schedule_collection_import_task_execution(task_id: int) -> None:
+    global COLLECTION_IMPORT_TASK_QUEUE_ACTIVE
+    with connect() as db:
+        row = db.execute("SELECT status FROM collection_import_tasks WHERE id = ?", (task_id,)).fetchone()
+        if row and row["status"] not in {"queued", "running"}:
+            db.execute("UPDATE collection_import_tasks SET status = ?, updated_at = ? WHERE id = ?", ("queued", now_text(), task_id))
+    with COLLECTION_IMPORT_TASK_QUEUE_LOCK:
+        if COLLECTION_IMPORT_TASK_QUEUE_ACTIVE:
+            return
+        COLLECTION_IMPORT_TASK_QUEUE_ACTIVE = True
+    thread = threading.Thread(target=run_collection_import_task_queue_worker, daemon=True)
+    thread.start()
+
+
+def resume_collection_import_task_queue() -> None:
+    with connect() as db:
+        db.execute(
+            "UPDATE collection_import_tasks SET status = 'queued', note = '服务重启后继续排队入库', updated_at = ? WHERE status = 'running'",
+            (now_text(),),
+        )
+        row = db.execute("SELECT id FROM collection_import_tasks WHERE status = 'queued' ORDER BY id ASC LIMIT 1").fetchone()
+    if row:
+        schedule_collection_import_task_execution(int(row["id"]))
+
+
+def run_collection_import_task_queue_worker() -> None:
+    global COLLECTION_IMPORT_TASK_QUEUE_ACTIVE
+    try:
+        while True:
+            with connect() as db:
+                row = db.execute("SELECT id FROM collection_import_tasks WHERE status = 'queued' ORDER BY id ASC LIMIT 1").fetchone()
+            if not row:
+                break
+            run_collection_import_task_background(int(row["id"]))
+    finally:
+        with COLLECTION_IMPORT_TASK_QUEUE_LOCK:
+            COLLECTION_IMPORT_TASK_QUEUE_ACTIVE = False
+        with connect() as db:
+            row = db.execute("SELECT id FROM collection_import_tasks WHERE status = 'queued' ORDER BY id ASC LIMIT 1").fetchone()
+        if row:
+            schedule_collection_import_task_execution(int(row["id"]))
+
+
+def run_collection_import_task_background(task_id: int) -> None:
+    with connect() as db:
+        task = db.execute("SELECT * FROM collection_import_tasks WHERE id = ?", (task_id,)).fetchone()
+        if not task or task["status"] != "queued":
+            return
+        ids = [int(item_id) for item_id in json.loads(task["ids_json"] or "[]") if int(item_id) > 0]
+        db.execute(
+            "UPDATE collection_import_tasks SET status = ?, total_count = ?, note = ?, updated_at = ? WHERE id = ?",
+            ("running", len(ids), "正在加入商品库", now_text(), task_id),
+        )
+    imported_count = 0
+    skipped_count = 0
+    failed_count = 0
+    processed_count = 0
+    imported_product_ids: list[int] = []
+    for item_id in ids:
+        try:
+            with connect() as db:
+                row = db.execute("SELECT * FROM collection_items WHERE id = ?", (item_id,)).fetchone()
+                if not row or row["status"] == "imported":
+                    skipped_count += 1
+                else:
+                    imported_product = import_collection_row_as_product(db, row)
+                    imported_product_ids.append(int(imported_product.id))
+                    imported_count += 1
+                processed_count += 1
+                db.execute(
+                    """
+                    UPDATE collection_import_tasks
+                    SET processed_count = ?, imported_count = ?, skipped_count = ?, failed_count = ?, note = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (processed_count, imported_count, skipped_count, failed_count, f"已处理 {processed_count}/{len(ids)} 条", now_text(), task_id),
+                )
+        except Exception as exc:
+            failed_count += 1
+            processed_count += 1
+            with connect() as db:
+                db.execute(
+                    """
+                    UPDATE collection_import_tasks
+                    SET processed_count = ?, imported_count = ?, skipped_count = ?, failed_count = ?, note = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (processed_count, imported_count, skipped_count, failed_count, f"部分入库失败：{str(exc)[:120]}", now_text(), task_id),
+                )
+    status = "completed" if imported_count else ("failed" if failed_count else "empty")
+    note = f"入库完成：新增 {imported_count} 条，跳过 {skipped_count} 条，失败 {failed_count} 条"
+    if imported_product_ids:
+        note = f"{note}; imported_product_ids={','.join(str(product_id) for product_id in imported_product_ids)}"
+    with connect() as db:
+        db.execute(
+            """
+            UPDATE collection_import_tasks
+            SET status = ?, processed_count = ?, imported_count = ?, skipped_count = ?, failed_count = ?, note = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (status, processed_count, imported_count, skipped_count, failed_count, note, now_text(), task_id),
+        )
+
+
+def enqueue_collection_image_download(db: sqlite3.Connection, collection_item_id: int, image_url: str) -> None:
+    clean_url = str(image_url or "").strip()
+    if not clean_url or clean_url.startswith("/images/") or not clean_url.startswith("http"):
+        return
+    timestamp = now_text()
+    db.execute(
+        """
+        INSERT OR IGNORE INTO collection_image_tasks (collection_item_id, source_url, status, note, created_at, updated_at)
+        VALUES (?, ?, 'queued', ?, ?, ?)
+        """,
+        (collection_item_id, clean_url, "等待后台下载采集图", timestamp, timestamp),
+    )
+
+
+def schedule_collection_image_task_execution() -> None:
+    global COLLECTION_IMAGE_TASK_QUEUE_ACTIVE
+    with COLLECTION_IMAGE_TASK_QUEUE_LOCK:
+        if COLLECTION_IMAGE_TASK_QUEUE_ACTIVE:
+            return
+        COLLECTION_IMAGE_TASK_QUEUE_ACTIVE = True
+    thread = threading.Thread(target=run_collection_image_task_queue_worker, daemon=True)
+    thread.start()
+
+
+def resume_collection_image_task_queue() -> None:
+    with connect() as db:
+        db.execute(
+            "UPDATE collection_image_tasks SET status = 'queued', note = '服务重启后重新排队下载', updated_at = ? WHERE status = 'running'",
+            (now_text(),),
+        )
+        row = db.execute("SELECT id FROM collection_image_tasks WHERE status = 'queued' ORDER BY id ASC LIMIT 1").fetchone()
+    if row:
+        schedule_collection_image_task_execution()
+
+
+def run_collection_image_task_queue_worker() -> None:
+    global COLLECTION_IMAGE_TASK_QUEUE_ACTIVE
+    try:
+        while True:
+            with connect() as db:
+                task = db.execute("SELECT * FROM collection_image_tasks WHERE status = 'queued' ORDER BY id ASC LIMIT 1").fetchone()
+                if not task:
+                    break
+                db.execute(
+                    "UPDATE collection_image_tasks SET status = 'running', attempts = attempts + 1, note = ?, updated_at = ? WHERE id = ?",
+                    ("正在下载采集图", now_text(), task["id"]),
+                )
+            try:
+                local_image = save_collection_image_from_url(int(task["collection_item_id"]), task["source_url"])
+                with connect() as db:
+                    if local_image:
+                        db.execute("UPDATE collection_items SET image_url = ? WHERE id = ?", (local_image, task["collection_item_id"]))
+                        db.execute(
+                            "UPDATE collection_image_tasks SET status = 'completed', local_path = ?, note = ?, updated_at = ? WHERE id = ?",
+                            (local_image, "采集图已下载到本地", now_text(), task["id"]),
+                        )
+                    else:
+                        db.execute(
+                            "UPDATE collection_image_tasks SET status = 'failed', note = ?, updated_at = ? WHERE id = ?",
+                            ("采集图下载失败", now_text(), task["id"]),
+                        )
+            except Exception as exc:
+                with connect() as db:
+                    db.execute(
+                        "UPDATE collection_image_tasks SET status = 'failed', note = ?, updated_at = ? WHERE id = ?",
+                        (f"采集图下载异常：{str(exc)[:120]}", now_text(), task["id"]),
+                    )
+    finally:
+        with COLLECTION_IMAGE_TASK_QUEUE_LOCK:
+            COLLECTION_IMAGE_TASK_QUEUE_ACTIVE = False
+        with connect() as db:
+            row = db.execute("SELECT id FROM collection_image_tasks WHERE status = 'queued' ORDER BY id ASC LIMIT 1").fetchone()
+        if row:
+            schedule_collection_image_task_execution()
+
+
+def schedule_processing_title_task_execution() -> None:
+    global PROCESSING_TITLE_TASK_QUEUE_ACTIVE
+    with PROCESSING_TITLE_TASK_QUEUE_LOCK:
+        if PROCESSING_TITLE_TASK_QUEUE_ACTIVE:
+            return
+        PROCESSING_TITLE_TASK_QUEUE_ACTIVE = True
+    thread = threading.Thread(target=run_processing_title_task_queue_worker, daemon=True)
+    thread.start()
+
+
+def resume_processing_title_task_queue() -> None:
+    with connect() as db:
+        db.execute(
+            "UPDATE processing_title_tasks SET status = 'queued', note = '服务重启后重新排队处理标题', updated_at = ? WHERE status = 'running'",
+            (now_text(),),
+        )
+        row = db.execute("SELECT id FROM processing_title_tasks WHERE status = 'queued' ORDER BY id ASC LIMIT 1").fetchone()
+    if row:
+        schedule_processing_title_task_execution()
+
+
+def run_processing_title_task_queue_worker() -> None:
+    global PROCESSING_TITLE_TASK_QUEUE_ACTIVE
+    try:
+        while True:
+            with connect() as db:
+                task = db.execute("SELECT * FROM processing_title_tasks WHERE status = 'queued' ORDER BY id ASC LIMIT 1").fetchone()
+                if not task:
+                    break
+                db.execute("UPDATE processing_title_tasks SET status = 'running', note = ?, updated_at = ? WHERE id = ?", ("正在批量处理标题", now_text(), task["id"]))
+            run_processing_title_task_background(int(task["id"]))
+    finally:
+        with PROCESSING_TITLE_TASK_QUEUE_LOCK:
+            PROCESSING_TITLE_TASK_QUEUE_ACTIVE = False
+        with connect() as db:
+            row = db.execute("SELECT id FROM processing_title_tasks WHERE status = 'queued' ORDER BY id ASC LIMIT 1").fetchone()
+        if row:
+            schedule_processing_title_task_execution()
+
+
+def run_processing_title_task_background(task_id: int) -> None:
+    with connect() as db:
+        task = db.execute("SELECT * FROM processing_title_tasks WHERE id = ?", (task_id,)).fetchone()
+    if not task:
+        return
+    ids = [int(product_id) for product_id in json.loads(task["ids_json"] or "[]") if int(product_id) > 0]
+    processed_count = 0
+    success_count = 0
+    failed_count = 0
+    cache_hit_count = 0
+    failed_ids: list[int] = []
+    request_delay_seconds = float_setting("ai_title_request_delay_seconds", 0.35, 0.0, 10.0)
+    max_retries = int_setting("ai_title_max_retries", 1, 0, 5)
+    retry_delay_seconds = float_setting("ai_title_retry_delay_seconds", 2.0, 0.0, 60.0)
+    for index, product_id in enumerate(ids, start=1):
+        try:
+            item = get_processing_item(product_id)
+            with connect() as db:
+                db.execute(
+                    """
+                    UPDATE processing_title_tasks
+                    SET note = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (f"正在处理 {index}/{len(ids)}：商品 #{product_id} 标题", now_text(), task_id),
+                )
+            had_cache = title_cache_exists(item)
+            chinese_title = ""
+            english_title = ""
+            last_error: Exception | None = None
+            for attempt in range(max_retries + 1):
+                try:
+                    chinese_title, english_title = generate_title_pair_for_processing_item(item)
+                    validate_title_pair(chinese_title, english_title)
+                    break
+                except Exception as exc:
+                    chinese_title = ""
+                    english_title = ""
+                    last_error = exc
+                    if attempt >= max_retries:
+                        raise
+                    if retry_delay_seconds > 0:
+                        time.sleep(retry_delay_seconds)
+            if not chinese_title or not english_title:
+                raise last_error or ValueError("标题生成结果为空")
+            update_product_title(product_id, chinese_title)
+            save_processing_override(
+                product_id,
+                ProcessingItemPayload(
+                    english_title=english_title,
+                    color=item.color,
+                    size=item.size,
+                    sku_code=item.sku_code,
+                    declared_price=item.declared_price,
+                    weight_g=item.weight_g,
+                    length_cm=item.length_cm,
+                    width_cm=item.width_cm,
+                    height_cm=item.height_cm,
+                    source_url=item.source_url,
+                    stock=item.stock,
+                    ship_days=item.ship_days,
+                ),
+            )
+            success_count += 1
+            if had_cache:
+                cache_hit_count += 1
+            elif request_delay_seconds > 0:
+                time.sleep(request_delay_seconds)
+        except Exception as exc:
+            failed_count += 1
+            failed_ids.append(product_id)
+            note = f"商品 #{product_id} 标题处理失败：{str(exc)[:120]}"
+            with connect() as db:
+                db.execute(
+                    """
+                    INSERT OR REPLACE INTO app_settings (key, value, updated_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (f"processing_title_task_{task_id}_last_error", note, now_text()),
+                )
+        processed_count += 1
+        with connect() as db:
+            db.execute(
+                """
+                UPDATE processing_title_tasks
+                SET processed_count = ?, success_count = ?, failed_count = ?, cache_hit_count = ?, failed_ids_json = ?, note = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (processed_count, success_count, failed_count, cache_hit_count, json.dumps(failed_ids), f"已处理 {processed_count}/{len(ids)} 个商品标题", now_text(), task_id),
+            )
+    status = "completed" if success_count else "failed"
+    note = f"标题处理完成：成功 {success_count} 个，失败 {failed_count} 个，命中缓存 {cache_hit_count} 个"
+    with connect() as db:
+        db.execute(
+            """
+            UPDATE processing_title_tasks
+            SET status = ?, processed_count = ?, success_count = ?, failed_count = ?, cache_hit_count = ?, failed_ids_json = ?, note = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (status, processed_count, success_count, failed_count, cache_hit_count, json.dumps(failed_ids), note, now_text(), task_id),
+        )
+
+
+def schedule_processing_field_task_execution() -> None:
+    global PROCESSING_FIELD_TASK_QUEUE_ACTIVE
+    with PROCESSING_FIELD_TASK_QUEUE_LOCK:
+        if PROCESSING_FIELD_TASK_QUEUE_ACTIVE:
+            return
+        PROCESSING_FIELD_TASK_QUEUE_ACTIVE = True
+    thread = threading.Thread(target=run_processing_field_task_queue_worker, daemon=True)
+    thread.start()
+
+
+def resume_processing_field_task_queue() -> None:
+    with connect() as db:
+        db.execute(
+            "UPDATE processing_field_tasks SET status = 'queued', note = '服务重启后重新排队批量字段处理', updated_at = ? WHERE status = 'running'",
+            (now_text(),),
+        )
+        row = db.execute("SELECT id FROM processing_field_tasks WHERE status = 'queued' ORDER BY id ASC LIMIT 1").fetchone()
+    if row:
+        schedule_processing_field_task_execution()
+
+
+def run_processing_field_task_queue_worker() -> None:
+    global PROCESSING_FIELD_TASK_QUEUE_ACTIVE
+    try:
+        while True:
+            with connect() as db:
+                task = db.execute("SELECT * FROM processing_field_tasks WHERE status = 'queued' ORDER BY id ASC LIMIT 1").fetchone()
+                if not task:
+                    break
+                db.execute("UPDATE processing_field_tasks SET status = 'running', note = ?, updated_at = ? WHERE id = ?", ("正在批量保存处理字段", now_text(), task["id"]))
+            run_processing_field_task_background(int(task["id"]))
+    finally:
+        with PROCESSING_FIELD_TASK_QUEUE_LOCK:
+            PROCESSING_FIELD_TASK_QUEUE_ACTIVE = False
+        with connect() as db:
+            row = db.execute("SELECT id FROM processing_field_tasks WHERE status = 'queued' ORDER BY id ASC LIMIT 1").fetchone()
+        if row:
+            schedule_processing_field_task_execution()
+
+
+def run_processing_field_task_background(task_id: int) -> None:
+    with connect() as db:
+        task = db.execute("SELECT * FROM processing_field_tasks WHERE id = ?", (task_id,)).fetchone()
+    if not task:
+        return
+    ids = [int(product_id) for product_id in json.loads(task["ids_json"] or "[]") if int(product_id) > 0]
+    fields = ProcessingItemPayload(**json.loads(task["fields_json"] or "{}"))
+    start_skc = str(task["start_skc"] or "").strip()
+    processed_count = 0
+    success_count = 0
+    failed_count = 0
+    failed_ids: list[int] = []
+    if start_skc:
+        timestamp = now_text()
+        with connect() as db:
+            for index, product_id in enumerate(ids):
+                desired_skc = increment_skc_value(start_skc, index)
+                skc = ensure_unique_skc(db, desired_skc, product_id)
+                db.execute("UPDATE products SET skc = ?, updated_at = ? WHERE id = ?", (skc, timestamp, product_id))
+    for product_id in ids:
+        try:
+            current = get_processing_item(product_id)
+            with connect() as db:
+                product_row = db.execute("SELECT purchase_price FROM products WHERE id = ?", (product_id,)).fetchone()
+            base_price = float(product_row["purchase_price"] or 0) if product_row else float(current.declared_price or 0)
+            declared_price_mode = str(getattr(fields, "declared_price_mode", "set") or "set").strip().lower()
+            if declared_price_mode in {"add", "+"}:
+                declared_price = round(base_price + float(fields.declared_price or 0), 2)
+            elif declared_price_mode in {"multiply", "*", "x", "×"}:
+                declared_price = round(base_price * float(fields.declared_price or 0), 2)
+            else:
+                declared_price = float(fields.declared_price or 0)
+            merged_fields = ProcessingItemPayload(
+                english_title=current.english_title,
+                color=current.color,
+                size=current.size,
+                sku_code=current.sku_code,
+                declared_price=declared_price,
+                weight_g=fields.weight_g,
+                length_cm=fields.length_cm,
+                width_cm=fields.width_cm,
+                height_cm=fields.height_cm,
+                source_url=current.source_url,
+                stock=fields.stock,
+                ship_days=fields.ship_days,
+            )
+            save_processing_override(product_id, merged_fields)
+            success_count += 1
+        except Exception:
+            failed_count += 1
+            failed_ids.append(product_id)
+        processed_count += 1
+        with connect() as db:
+            db.execute(
+                """
+                UPDATE processing_field_tasks
+                SET processed_count = ?, success_count = ?, failed_count = ?, failed_ids_json = ?, note = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (processed_count, success_count, failed_count, json.dumps(failed_ids), f"已保存 {processed_count}/{len(ids)} 个商品字段", now_text(), task_id),
+            )
+    status = "completed" if success_count else "failed"
+    note = f"批量字段处理完成：成功 {success_count} 个，失败 {failed_count} 个"
+    with connect() as db:
+        db.execute(
+            """
+            UPDATE processing_field_tasks
+            SET status = ?, processed_count = ?, success_count = ?, failed_count = ?, failed_ids_json = ?, note = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (status, processed_count, success_count, failed_count, json.dumps(failed_ids), note, now_text(), task_id),
+        )
+
+def add_collection_task_event(
+    db: sqlite3.Connection,
+    task_id: int,
+    stage: str,
+    status: str = "info",
+    message: str = "",
+    page_no: int = 0,
+    parsed_count: int = 0,
+    imported_count: int = 0,
+    skipped_count: int = 0,
+) -> None:
+    db.execute(
+        """
+        INSERT INTO collection_task_events (
+            task_id, stage, status, message, page_no, parsed_count, imported_count, skipped_count, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (task_id, stage, status, message, page_no, parsed_count, imported_count, skipped_count, now_text()),
+    )
 
 
 def collection_failure_note(provider: str, parsed_count: int, imported_count: int, skipped_count: int, base_note: str = "") -> str:
@@ -780,6 +1765,370 @@ def parse_collection_rows(file_path: Path) -> list[dict[str, object]]:
     for values in rows[1:]:
         parsed.append({headers[index]: values[index] if index < len(values) else "" for index in range(len(headers))})
     return parsed
+
+
+QUOTE_SKC_ALIASES = ["skc", "SKC货号", "SKC 货号", "货号", "产品货号", "商品编码", "商家编码"]
+QUOTE_SKU_ALIASES = ["SKU货号", "SKU 货号", "sku货号", "seller sku", "sku"]
+QUOTE_PRICE_ALIASES = ["调整后申报价格", "调整后申报价", "申报价格", "原申报价格", "平台核价", "核价", "平台价", "核定价", "结算价", "供货价", "价格", "price"]
+QUOTE_WEIGHT_ALIASES = ["重量", "重量g", "重量（g）", "weight", "weightg"]
+FREIGHT_RULES_SETTING_KEY = "freight_rules_json"
+DEFAULT_FREIGHT_ZONE_KEY = "freight_default_zone"
+DEFAULT_WAREHOUSE_FEE_KEY = "freight_default_warehouse_fee"
+
+
+def save_setting_value(db: sqlite3.Connection, key: str, value: str) -> None:
+    timestamp = now_text()
+    db.execute(
+        """
+        INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+        """,
+        (key, value, timestamp),
+    )
+
+
+def parse_quote_rows_from_text(text: str) -> list[dict[str, object]]:
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    if not lines:
+        return []
+    delimiter = "\t" if "\t" in lines[0] else ("," if "," in lines[0] else None)
+    if delimiter:
+        headers = [normalize_header(value) for value in lines[0].split(delimiter)]
+        has_known_header = any(header == normalize_header(alias) for header in headers for alias in QUOTE_SKC_ALIASES + QUOTE_PRICE_ALIASES)
+        if has_known_header:
+            reader = csv.DictReader(lines, delimiter=delimiter)
+            return [{normalize_header(key): value for key, value in row.items()} for row in reader]
+    parsed: list[dict[str, object]] = []
+    for line in lines:
+        parts = re.split(r"\s+|,|\t", line)
+        parts = [part for part in parts if part]
+        if len(parts) >= 2:
+            parsed.append({"skc": parts[0], "平台核价": parts[1], "重量": parts[2] if len(parts) >= 3 else ""})
+    return parsed
+
+
+def parse_quote_rows_from_file(file_path: Path) -> list[dict[str, object]]:
+    if file_path.suffix.lower() in {".txt", ".csv"}:
+        return parse_quote_rows_from_text(file_path.read_text(encoding="utf-8-sig", errors="replace"))
+    workbook = load_workbook(file_path, read_only=True, data_only=True)
+    parsed: list[dict[str, object]] = []
+    for sheet in workbook.worksheets:
+        rows = list(sheet.iter_rows(values_only=True))
+        if not rows:
+            continue
+        headers = [normalize_header(value) for value in rows[0]]
+        if not any(header for header in headers):
+            continue
+        for values in rows[1:]:
+            parsed.append({headers[index]: values[index] if index < len(values) else "" for index in range(len(headers))})
+    return parsed
+
+
+def worksheet_rows_from_file(file_path: Path) -> dict[str, list[list[object]]]:
+    suffix = file_path.suffix.lower()
+    if suffix == ".xls":
+        workbook = xlrd.open_workbook(str(file_path))
+        return {
+            sheet.name: [sheet.row_values(row_index) for row_index in range(sheet.nrows)]
+            for sheet in workbook.sheets()
+        }
+    workbook = load_workbook(file_path, read_only=True, data_only=True)
+    return {sheet.title: [list(row) for row in sheet.iter_rows(values_only=True)] for sheet in workbook.worksheets}
+
+
+def parse_freight_rules(file_path: Path) -> dict[str, object]:
+    sheets = worksheet_rows_from_file(file_path)
+    first_mile_rules: list[dict[str, object]] = []
+    last_mile_rules: list[dict[str, object]] = []
+    for sheet_name, rows in sheets.items():
+        if not rows:
+            continue
+        headers = [normalize_header(value) for value in rows[0]]
+        has_last_mile_header = any(header.startswith("zone") for header in headers)
+        has_first_mile_header = not has_last_mile_header and ("头程渠道" in headers or "价格/kg" in headers or "价格kg" in headers)
+        sheet_key = normalize_header(sheet_name)
+
+        if has_first_mile_header:
+            for values in rows[1:]:
+                row = {headers[index]: values[index] if index < len(values) else "" for index in range(len(headers))}
+                channel = str(first_value(row, ["头程渠道", "渠道"], "")).strip() or "空运"
+                max_weight_g = to_int(first_value(row, ["重量段（g）", "重量段g", "重量g"], 0), 0)
+                price_per_kg = to_float(first_value(row, ["价格/kg", "价格kg", "单价"], 0), 0)
+                fixed_fee = to_float(first_value(row, ["附加费", "固定费"], 0), 0)
+                if max_weight_g > 0 and price_per_kg > 0:
+                    first_mile_rules.append({"channel": channel, "max_weight_g": max_weight_g, "price_per_kg": price_per_kg, "fixed_fee": fixed_fee})
+            continue
+
+        if has_last_mile_header:
+            for values in rows[1:]:
+                row = {headers[index]: values[index] if index < len(values) else "" for index in range(len(headers))}
+                channel = str(first_value(row, ["尾程渠道", "渠道"], "")).strip() or "Temu"
+                max_weight_g = to_int(first_value(row, ["重量（g）", "重量g", "重量"], 0), 0)
+                zones = {header: to_float(row.get(header), 0) for header in headers if header.startswith("zone")}
+                if max_weight_g > 0 and any(value > 0 for value in zones.values()):
+                    last_mile_rules.append({"channel": channel, "max_weight_g": max_weight_g, "zones": zones})
+            continue
+
+        # No-header fallback: first mile defaults to columns channel/max_weight_g/price_per_kg/fixed_fee;
+        # last mile defaults to channel/imperial/max_weight_g/zone1..zone9.
+        is_first_mile_sheet = "1" in sheet_key or "first" in sheet_key or "头程" in sheet_key
+        is_last_mile_sheet = "2" in sheet_key or "last" in sheet_key or "尾程" in sheet_key
+        if not is_first_mile_sheet and not is_last_mile_sheet:
+            numeric_width = max((sum(1 for value in row if to_float(value, 0) > 0) for row in rows[:5]), default=0)
+            is_last_mile_sheet = numeric_width >= 4
+            is_first_mile_sheet = not is_last_mile_sheet
+
+        if is_first_mile_sheet:
+            for values in rows:
+                channel = str(values[0] if len(values) > 0 and values[0] else "空运").strip()
+                max_weight_g = to_int(values[1] if len(values) > 1 else 0, 0)
+                price_per_kg = to_float(values[2] if len(values) > 2 else 0, 0)
+                fixed_fee = to_float(values[3] if len(values) > 3 else 0, 0)
+                if max_weight_g > 0 and price_per_kg > 0:
+                    first_mile_rules.append({"channel": channel or "空运", "max_weight_g": max_weight_g, "price_per_kg": price_per_kg, "fixed_fee": fixed_fee})
+            continue
+
+        if is_last_mile_sheet:
+            for values in rows:
+                channel = str(values[0] if len(values) > 0 and values[0] else "Temu").strip()
+                max_weight_g = to_int(values[2] if len(values) > 2 else 0, 0)
+                zones = {f"zone{index - 2}": to_float(values[index], 0) for index in range(3, min(len(values), 12))}
+                if max_weight_g > 0 and any(value > 0 for value in zones.values()):
+                    last_mile_rules.append({"channel": channel or "Temu", "max_weight_g": max_weight_g, "zones": zones})
+    first_mile_rules.sort(key=lambda item: int(item["max_weight_g"]))
+    last_mile_rules.sort(key=lambda item: int(item["max_weight_g"]))
+    return {"first_mile": first_mile_rules, "last_mile": last_mile_rules}
+
+def freight_rules() -> dict[str, object]:
+    raw = get_setting_value(FREIGHT_RULES_SETTING_KEY, "")
+    if raw:
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError:
+            pass
+    return {"first_mile": [{"channel": "空运", "max_weight_g": 10000000, "price_per_kg": 69, "fixed_fee": 4}], "last_mile": []}
+
+
+def default_warehouse_fee() -> float:
+    return to_float(get_setting_value(DEFAULT_WAREHOUSE_FEE_KEY, "15"), 15)
+
+
+def normalize_freight_zone(zone: str | None) -> str:
+    zone_key = normalize_header(zone or "zone5") or "zone5"
+    if not re.fullmatch(r"zone[1-9]", zone_key):
+        raise HTTPException(status_code=400, detail="默认 Zone 必须是 zone1~zone9")
+    return zone_key
+
+
+def freight_payload_to_rules(payload: FreightRulesPayload) -> dict[str, object]:
+    first_mile: list[dict[str, object]] = []
+    for rule in payload.first_mile:
+        if rule.max_weight_g <= 0 or rule.price_per_kg < 0 or rule.fixed_fee < 0:
+            raise HTTPException(status_code=400, detail="头程规则的重量和费用不能为负数")
+        first_mile.append({
+            "channel": rule.channel.strip() or "空运",
+            "max_weight_g": int(rule.max_weight_g),
+            "price_per_kg": float(rule.price_per_kg),
+            "fixed_fee": float(rule.fixed_fee),
+        })
+    last_mile: list[dict[str, object]] = []
+    for rule in payload.last_mile:
+        if rule.max_weight_g <= 0:
+            raise HTTPException(status_code=400, detail="尾程规则的重量必须大于 0")
+        zones: dict[str, float] = {}
+        for key, value in (rule.zones or {}).items():
+            zone_key = normalize_freight_zone(str(key))
+            fee = float(value or 0)
+            if fee < 0:
+                raise HTTPException(status_code=400, detail="尾程费用不能为负数")
+            zones[zone_key] = fee
+        last_mile.append({
+            "channel": rule.channel.strip() or "尾程",
+            "max_weight_g": int(rule.max_weight_g),
+            "zones": zones,
+        })
+    first_mile.sort(key=lambda item: int(item.get("max_weight_g") or 0))
+    last_mile.sort(key=lambda item: int(item.get("max_weight_g") or 0))
+    if not first_mile:
+        raise HTTPException(status_code=400, detail="至少需要 1 条头程规则")
+    return {"first_mile": first_mile, "last_mile": last_mile}
+
+
+def calculate_first_mile(weight_g: int) -> float:
+    if weight_g <= 0:
+        return 0
+    rules = freight_rules().get("first_mile", [])
+    for rule in rules if isinstance(rules, list) else []:
+        if weight_g <= int(rule.get("max_weight_g") or 0):
+            return float(math.ceil(float(rule.get("price_per_kg") or 0) * weight_g / 1000 + float(rule.get("fixed_fee") or 0)))
+    return 0
+
+
+def calculate_last_mile(weight_g: int, zone: str | None = None) -> float:
+    if weight_g <= 0:
+        return 0
+    zone_key = normalize_header(zone or get_setting_value(DEFAULT_FREIGHT_ZONE_KEY, "zone5") or "zone5")
+    rules = freight_rules().get("last_mile", [])
+    for rule in rules if isinstance(rules, list) else []:
+        if weight_g <= int(rule.get("max_weight_g") or 0):
+            zones = rule.get("zones") if isinstance(rule.get("zones"), dict) else {}
+            return float(zones.get(zone_key) or 0)
+    return 0
+
+
+def quote_row_value(row: dict[str, object], aliases: list[str]) -> object:
+    return first_value(row, aliases, "")
+
+
+def skc_from_sku_code(sku_code: str, known_skc_values: list[str]) -> str:
+    clean_sku = str(sku_code or "").strip()
+    if not clean_sku:
+        return ""
+    upper_sku = clean_sku.upper()
+    for skc in sorted(known_skc_values, key=len, reverse=True):
+        upper_skc = skc.upper()
+        if upper_sku == upper_skc or upper_sku.startswith(f"{upper_skc}-"):
+            return skc
+    match = re.match(r"^([A-Za-z]{1,8}\d{6,}(?:-\d+)?)", clean_sku)
+    return match.group(1) if match else clean_sku
+
+
+def apply_quote_rows(rows: list[dict[str, object]]) -> QuoteImportResult:
+    timestamp = now_text()
+    updated_count = 0
+    unmatched: list[dict[str, object]] = []
+    invalid: list[dict[str, object]] = []
+    duplicates: list[str] = []
+    seen: set[str] = set()
+    with connect() as db:
+        known_skc_values = [str(row["skc"] or "") for row in db.execute("SELECT skc FROM products WHERE skc != ''").fetchall()]
+        for index, row in enumerate(rows, start=1):
+            skc = str(quote_row_value(row, QUOTE_SKC_ALIASES) or "").strip()
+            sku_code = str(quote_row_value(row, QUOTE_SKU_ALIASES) or "").strip()
+            if not skc:
+                skc = skc_from_sku_code(sku_code, known_skc_values)
+            quote_price = to_float(quote_row_value(row, QUOTE_PRICE_ALIASES), 0)
+            weight_g = to_int(quote_row_value(row, QUOTE_WEIGHT_ALIASES), 0)
+            if not skc or quote_price <= 0:
+                invalid.append({"row": index, "skc": skc, "reason": "缺少 SKC 或平台核价"})
+                continue
+            normalized_skc = skc.upper()
+            if normalized_skc in seen:
+                duplicates.append(skc)
+                continue
+            seen.add(normalized_skc)
+            product = db.execute("SELECT * FROM products WHERE upper(skc) = ?", (normalized_skc,)).fetchone()
+            if not product:
+                unmatched.append({"row": index, "skc": skc, "platform_quote_price": quote_price})
+                continue
+            payload = ProductPayload(
+                title=product["title"],
+                skc=product["skc"],
+                sku_summary=product["sku_summary"],
+                purchase_price=float(product["purchase_price"] or 0),
+                platform_quote_price=quote_price,
+                weight_g=weight_g or int(product["weight_g"] or 0),
+                first_mile=0 if weight_g else float(product["first_mile"] or 0),
+                warehouse_fee=default_warehouse_fee(),
+                last_mile=0 if weight_g else float(product["last_mile"] or product["platform_cost"] or 0),
+                platform_cost=float(product["platform_cost"] or 0),
+                status=product["status"],
+            )
+            payload = product_payload_with_freight(payload)
+            total_cost, estimated_profit, gross_margin = recalc(payload)
+            status = quote_status(estimated_profit, gross_margin, product["status"])
+            db.execute(
+                """
+                UPDATE products SET platform_quote_price = ?, weight_g = ?, first_mile = ?, warehouse_fee = ?,
+                last_mile = ?, platform_cost = ?, total_cost = ?, estimated_profit = ?, gross_margin = ?,
+                status = ?, updated_at = ? WHERE id = ?
+                """,
+                (
+                    payload.platform_quote_price, payload.weight_g, payload.first_mile, payload.warehouse_fee,
+                    payload.last_mile, payload.last_mile, total_cost, estimated_profit, gross_margin, status,
+                    timestamp, product["id"],
+                ),
+            )
+            updated_count += 1
+    return QuoteImportResult(
+        updated_count=updated_count,
+        unmatched_count=len(unmatched),
+        invalid_count=len(invalid),
+        duplicate_count=len(duplicates),
+        rows_count=len(rows),
+        unmatched=unmatched[:50],
+        invalid=invalid[:50],
+        duplicates=duplicates[:50],
+    )
+
+
+def sync_product_weight_from_processing(db: sqlite3.Connection, product_id: int, weight_g: int) -> None:
+    clean_weight = int(weight_g or 0)
+    if clean_weight <= 0:
+        return
+    product = db.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+    if not product:
+        return
+    payload = ProductPayload(
+        title=product["title"],
+        skc=product["skc"],
+        sku_summary=product["sku_summary"],
+        purchase_price=float(product["purchase_price"] or 0),
+        platform_quote_price=float(product["platform_quote_price"] or 0),
+        weight_g=clean_weight,
+        first_mile=0,
+        warehouse_fee=default_warehouse_fee(),
+        last_mile=0,
+        platform_cost=0,
+        status=product["status"],
+    )
+    payload = product_payload_with_freight(payload)
+    total_cost, estimated_profit, gross_margin = recalc(payload)
+    status = quote_status(estimated_profit, gross_margin, product["status"])
+    db.execute(
+        """
+        UPDATE products SET weight_g = ?, first_mile = ?, warehouse_fee = ?, last_mile = ?, platform_cost = ?,
+        total_cost = ?, estimated_profit = ?, gross_margin = ?, status = ?, updated_at = ? WHERE id = ?
+        """,
+        (
+            payload.weight_g, payload.first_mile, payload.warehouse_fee, payload.last_mile, payload.last_mile,
+            total_cost, estimated_profit, gross_margin, status, now_text(), product_id,
+        ),
+    )
+
+
+def recalculate_all_product_freight(db: sqlite3.Connection) -> int:
+    timestamp = now_text()
+    rows = db.execute("SELECT * FROM products").fetchall()
+    updated = 0
+    for product in rows:
+        payload = ProductPayload(
+            title=product["title"],
+            skc=product["skc"],
+            sku_summary=product["sku_summary"],
+            purchase_price=float(product["purchase_price"] or 0),
+            platform_quote_price=float(product["platform_quote_price"] or 0),
+            weight_g=int(product["weight_g"] or 0),
+            first_mile=0,
+            warehouse_fee=default_warehouse_fee(),
+            last_mile=0,
+            platform_cost=0,
+            status=product["status"],
+        )
+        payload = product_payload_with_freight(payload)
+        total_cost, estimated_profit, gross_margin = recalc(payload)
+        status = quote_status(estimated_profit, gross_margin, product["status"])
+        db.execute(
+            """
+            UPDATE products SET first_mile = ?, warehouse_fee = ?, last_mile = ?, platform_cost = ?,
+            total_cost = ?, estimated_profit = ?, gross_margin = ?, status = ?, updated_at = ? WHERE id = ?
+            """,
+            (payload.first_mile, payload.warehouse_fee, payload.last_mile, payload.last_mile, total_cost, estimated_profit, gross_margin, status, timestamp, product["id"]),
+        )
+        updated += 1
+    return updated
 
 
 def collection_preflight() -> dict[str, object]:
@@ -874,7 +2223,7 @@ def run_collector(payload: CollectionTaskPayload, task_id: int) -> CollectorRunR
     raise HTTPException(status_code=400, detail=f"不支持的采集模式：{mode}")
 
 
-def call_openai_compatible_chat(base_url: str, api_key: str, model: str, messages: list[dict[str, str]], timeout: int = 45) -> str:
+def call_openai_compatible_chat(base_url: str, api_key: str, model: str, messages: list[dict[str, str]], timeout: int = 20) -> str:
     endpoint = base_url.rstrip("/")
     if not endpoint.endswith("/chat/completions"):
         endpoint = f"{endpoint}/v1/chat/completions"
@@ -944,43 +2293,108 @@ def normalize_onebound_items(items: list[dict[str, object]], source: str) -> lis
     return rows
 
 
-def run_onebound_1688_search(payload: CollectionTaskPayload) -> list[dict[str, object]]:
+
+def collection_existing_dedupe_sets(db: sqlite3.Connection | None = None) -> tuple[set[str], set[str]]:
+    close_db = False
+    if db is None:
+        db = connect()
+        close_db = True
+    try:
+        existing_urls = {
+            str(row["source_url"] or "").strip()
+            for row in db.execute("SELECT source_url FROM collection_items WHERE source_url != ''").fetchall()
+        }
+        existing_keys = {
+            f"{row['source']}::{row['title']}".lower()
+            for row in db.execute("SELECT source, title FROM collection_items").fetchall()
+        }
+        return existing_urls, existing_keys
+    finally:
+        if close_db:
+            db.close()
+
+
+def collection_row_dedupe_key(row: dict[str, object], fallback_source: str = "") -> tuple[str, str]:
+    source = str(row.get("source") or fallback_source or "").strip()
+    title = str(row.get("title") or "").strip()
+    source_url = str(row.get("source_url") or row.get("url") or "").strip()
+    return source_url, f"{source}::{title}".lower()
+
+
+def run_onebound_1688_search(payload: CollectionTaskPayload, task_id: int | None = None) -> list[dict[str, object]]:
     key = get_setting_value("onebound_key", "").strip()
     secret = get_setting_value("onebound_secret", "").strip()
     if not key or not secret:
-        raise HTTPException(status_code=400, detail="万邦 API Key/Secret 未配置")
-    params = {
-        "key": key,
-        "secret": secret,
-        "q": payload.keyword.strip(),
-        "page": "1",
-        "page_size": str(max(1, min(int(payload.target_count or 1), 50))),
-    }
-    if payload.min_price:
-        params["start_price"] = str(payload.min_price)
-    if payload.max_price:
-        params["end_price"] = str(payload.max_price)
-    endpoint = "https://api-gw.onebound.cn/1688/item_search?" + urllib.parse.urlencode(params)
-    request = urllib.request.Request(endpoint, headers={"Accept": "application/json"}, method="GET")
-    try:
-        with urllib.request.urlopen(request, timeout=45) as response:
-            data = json.loads(response.read().decode("utf-8", errors="replace"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")[:500]
-        raise HTTPException(status_code=502, detail=f"万邦 API 返回错误：{exc.code} {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise HTTPException(status_code=502, detail=f"万邦 API 连接失败：{exc.reason}") from exc
-    except TimeoutError as exc:
-        raise HTTPException(status_code=504, detail="万邦 API 请求超时") from exc
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=502, detail="万邦 API 返回非 JSON 内容") from exc
-    error = first_value(data, ["error", "error_msg", "msg", "message"], "")
-    code = str(first_value(data, ["error_code", "code"], "")).strip()
-    items = extract_onebound_items(data)
-    if not items and error:
-        raise HTTPException(status_code=502, detail=f"万邦 API 错误：{code} {error}".strip())
-    return normalize_onebound_items(items, payload.source or "1688")
-
+        raise HTTPException(status_code=400, detail="Onebound API Key/Secret is not configured")
+    target_count = max(1, min(int(payload.target_count or 1), COLLECTION_TARGET_MAX))
+    page_size = min(ONEBOUND_PAGE_SIZE_MAX, target_count)
+    existing_urls, existing_keys = collection_existing_dedupe_sets()
+    collected: list[dict[str, object]] = []
+    seen_urls: set[str] = set()
+    seen_keys: set[str] = set()
+    max_pages = max(1, min(20, ((target_count + page_size - 1) // page_size) + 8))
+    last_error = ""
+    for page_no in range(1, max_pages + 1):
+        raise_if_collection_task_cancelled(task_id)
+        params = {
+            "key": key,
+            "secret": secret,
+            "q": payload.keyword.strip(),
+            "page": str(page_no),
+            "page_size": str(page_size),
+        }
+        if payload.min_price:
+            params["start_price"] = str(payload.min_price)
+        if payload.max_price:
+            params["end_price"] = str(payload.max_price)
+        endpoint = "https://api-gw.onebound.cn/1688/item_search?" + urllib.parse.urlencode(params)
+        request = urllib.request.Request(endpoint, headers={"Accept": "application/json"}, method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=45) as response:
+                data = json.loads(response.read().decode("utf-8", errors="replace"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:500]
+            raise HTTPException(status_code=502, detail=f"Onebound API returned error: {exc.code} {detail}") from exc
+        except urllib.error.URLError as exc:
+            raise HTTPException(status_code=502, detail=f"Onebound API connection failed: {exc.reason}") from exc
+        except TimeoutError as exc:
+            raise HTTPException(status_code=504, detail="Onebound API request timed out") from exc
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=502, detail="Onebound API returned non-JSON content") from exc
+        error = first_value(data, ["error", "error_msg", "msg", "message"], "")
+        code = str(first_value(data, ["error_code", "code"], "")).strip()
+        items = extract_onebound_items(data)
+        if not items:
+            if error:
+                last_error = f"{code} {error}".strip()
+                if not collected:
+                    raise HTTPException(status_code=502, detail=f"Onebound API error: {last_error}".strip())
+            break
+        rows = normalize_onebound_items(items, payload.source or "1688")
+        new_count_this_page = 0
+        for row in rows:
+            raise_if_collection_task_cancelled(task_id)
+            source_url, dedupe_key = collection_row_dedupe_key(row, payload.source or "1688")
+            if (source_url and source_url in existing_urls) or dedupe_key in existing_keys:
+                continue
+            if (source_url and source_url in seen_urls) or dedupe_key in seen_keys:
+                continue
+            if source_url:
+                seen_urls.add(source_url)
+            seen_keys.add(dedupe_key)
+            collected.append(row)
+            new_count_this_page += 1
+            if len(collected) >= target_count:
+                return collected[:target_count]
+        if len(items) < page_size:
+            break
+        if new_count_this_page == 0 and page_no >= max_pages:
+            break
+        raise_if_collection_task_cancelled(task_id)
+        time.sleep(0.2)
+    if not collected and last_error:
+        raise HTTPException(status_code=502, detail=f"Onebound API error: {last_error}".strip())
+    return collected[:target_count]
 
 def extract_offer_id(source_url: str) -> str:
     match = re.search(r"offer/(\d+)\.html", source_url or "")
@@ -1202,15 +2616,29 @@ def apply_detail_to_product(db: sqlite3.Connection, product_id: int, source_url:
             (payload_for_cost.title, payload_for_cost.sku_summary, payload_for_cost.purchase_price, total_cost, estimated_profit, gross_margin, timestamp, product_id),
         )
     override = db.execute("SELECT * FROM processing_overrides WHERE product_id = ?", (product_id,)).fetchone()
+    color_text = " / ".join(colors)
+    size_text = " / ".join(sizes)
+    default_sku_code = f"{product['skc']}-{(colors[0] if colors else 'COLOR')}-{(sizes[0] if sizes else 'SIZE')}" if product else ""
     if override:
-        color_text = " / ".join(colors) or override["color"]
-        size_text = " / ".join(sizes) or override["size"]
+        color_text = color_text or override["color"]
+        size_text = size_text or override["size"]
         sku_code = override["sku_code"]
-        if sku_code.endswith("COLOR-SIZE") and product:
-            sku_code = f"{product['skc']}-{(colors[0] if colors else 'COLOR')}-{(sizes[0] if sizes else 'SIZE')}"
+        if (not sku_code or sku_code.endswith("COLOR-SIZE")) and default_sku_code:
+            sku_code = default_sku_code
         db.execute(
             "UPDATE processing_overrides SET color = ?, size = ?, sku_code = ?, source_url = ?, updated_at = ? WHERE product_id = ?",
             (color_text, size_text, sku_code, source_url, timestamp, product_id),
+        )
+    elif product and (color_text or size_text):
+        default_declared_price = round(float(product["total_cost"] or 0) + 239, 2)
+        db.execute(
+            """
+            INSERT INTO processing_overrides (
+                product_id, english_title, color, size, sku_code, declared_price,
+                weight_g, length_cm, width_cm, height_cm, source_url, stock, ship_days, updated_at
+            ) VALUES (?, '', ?, ?, ?, ?, 350, 15, 10, 2, ?, 999, 9, ?)
+            """,
+            (product_id, color_text, size_text, default_sku_code, default_declared_price, source_url, timestamp),
         )
     return detail
 
@@ -1387,37 +2815,66 @@ def parse_1688_public_search(html: str, source: str, target_count: int, min_pric
     return rows
 
 
-def run_1688_public_search(payload: CollectionTaskPayload) -> list[dict[str, object]]:
+def run_1688_public_search(payload: CollectionTaskPayload, task_id: int | None = None) -> list[dict[str, object]]:
     keyword = payload.keyword.strip()
     if not keyword:
-        raise HTTPException(status_code=400, detail="请输入采集关键词")
+        raise HTTPException(status_code=400, detail="Please enter collection keyword")
     cookie_path = Path(get_setting_value("1688_cookie_path", "data/1688_cookies.json"))
     if not cookie_path.is_absolute():
         cookie_path = BASE_DIR / cookie_path
     cookie_header = load_cookie_header(cookie_path)
-    target_count = max(1, min(int(payload.target_count or 1), 50))
+    target_count = max(1, min(int(payload.target_count or 1), COLLECTION_TARGET_MAX))
     min_price = max(float(payload.min_price or 0), 0)
     max_price = max(float(payload.max_price or 0), 0)
-    query = urllib.parse.urlencode({"keywords": keyword}, encoding="utf-8")
-    search_urls = [
-        f"https://s.1688.com/selloffer/offer_search.htm?{query}",
-        f"https://search.1688.com/selloffer/offer_search.htm?{query}",
-    ]
+    existing_urls, existing_keys = collection_existing_dedupe_sets()
+    collected: list[dict[str, object]] = []
+    seen_urls: set[str] = set()
+    seen_keys: set[str] = set()
     last_error = ""
-    for url in search_urls:
-        try:
-            html = fetch_text_with_cookie(url, cookie_header)
-            rows = parse_1688_public_search(html, payload.source or "1688", target_count, min_price, max_price, payload.blacklist)
-            if rows:
-                return rows
-            if "login.1688.com" in html or "_____tmd_____" in html or "x5sec" in html:
-                last_error = "Cookie 已失效或被 1688 风控拦截，请重新导出登录 Cookie"
-            else:
-                last_error = "页面已返回，但未解析到商品；可能页面结构变化"
-        except HTTPException as exc:
-            last_error = str(exc.detail)
-    raise HTTPException(status_code=502, detail=f"1688 Cookie 真实采集失败：{last_error or '未返回商品'}")
-
+    for page_no in range(1, 11):
+        raise_if_collection_task_cancelled(task_id)
+        query = urllib.parse.urlencode({"keywords": keyword, "beginPage": page_no}, encoding="utf-8")
+        search_urls = [
+            f"https://s.1688.com/selloffer/offer_search.htm?{query}",
+            f"https://search.1688.com/selloffer/offer_search.htm?{query}",
+        ]
+        page_had_response = False
+        for url in search_urls:
+            raise_if_collection_task_cancelled(task_id)
+            try:
+                html = fetch_text_with_cookie(url, cookie_header)
+                page_had_response = True
+                rows = parse_1688_public_search(html, payload.source or "1688", target_count, min_price, max_price, payload.blacklist)
+                for row in rows:
+                    raise_if_collection_task_cancelled(task_id)
+                    source_url, dedupe_key = collection_row_dedupe_key(row, payload.source or "1688")
+                    if (source_url and source_url in existing_urls) or dedupe_key in existing_keys:
+                        continue
+                    if (source_url and source_url in seen_urls) or dedupe_key in seen_keys:
+                        continue
+                    if source_url:
+                        seen_urls.add(source_url)
+                    seen_keys.add(dedupe_key)
+                    collected.append(row)
+                    if len(collected) >= target_count:
+                        return collected[:target_count]
+                if rows:
+                    break
+                if "login.1688.com" in html or "_____tmd_____" in html or "x5sec" in html:
+                    last_error = "Cookie expired or blocked by 1688 risk control; please refresh login cookie"
+                    break
+                last_error = "Page returned but no product was parsed; page structure may have changed"
+            except HTTPException as exc:
+                last_error = str(exc.detail)
+        if len(collected) >= target_count:
+            break
+        if not page_had_response:
+            break
+        raise_if_collection_task_cancelled(task_id)
+        time.sleep(0.2)
+    if collected:
+        return collected[:target_count]
+    raise HTTPException(status_code=502, detail=f"1688 Cookie collection failed: {last_error or 'no products returned'}")
 
 def normalize_collection_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
     return [{normalize_header(key): value for key, value in row.items()} for row in rows if isinstance(row, dict)]
@@ -1427,8 +2884,7 @@ def insert_collection_rows_with_db(db: sqlite3.Connection, rows: list[dict[str, 
     imported = 0
     skipped = 0
     timestamp = now_text()
-    existing_urls = {row["source_url"] for row in db.execute("SELECT source_url FROM collection_items WHERE source_url != ''").fetchall()}
-    existing_keys = {f"{row['source']}::{row['title']}".lower() for row in db.execute("SELECT source, title FROM collection_items").fetchall()}
+    existing_urls, existing_keys = collection_existing_dedupe_sets(db)
     for row in rows:
         title = str(first_value(row, ["title", "商品标题", "标题", "name", "productname", "producttitle"], "")).strip()
         if not title:
@@ -1447,17 +2903,20 @@ def insert_collection_rows_with_db(db: sqlite3.Connection, rows: list[dict[str, 
         if not image_url:
             skipped += 1
             continue
-        db.execute(
+        cursor = db.execute(
             """
             INSERT INTO collection_items (title, source, source_url, image_url, price, sales, image_count, status, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
             """,
             (title, row_source, source_url, image_url, price, sales, image_count, timestamp),
         )
+        enqueue_collection_image_download(db, cursor.lastrowid, image_url)
         if source_url:
             existing_urls.add(source_url)
         existing_keys.add(dedupe_key)
         imported += 1
+    if imported:
+        schedule_collection_image_task_execution()
     return imported, skipped
 
 
@@ -1471,27 +2930,29 @@ def insert_collection_candidates(candidates: list[CollectorCandidate]) -> tuple[
     skipped = 0
     timestamp = now_text()
     with connect() as db:
-        existing_urls = {row["source_url"] for row in db.execute("SELECT source_url FROM collection_items WHERE source_url != ''").fetchall()}
-        existing_keys = {f"{row['source']}::{row['title']}".lower() for row in db.execute("SELECT source, title FROM collection_items").fetchall()}
+        existing_urls, existing_keys = collection_existing_dedupe_sets(db)
         for candidate in candidates:
-            dedupe_key = f"{candidate.source}::{candidate.title}".lower()
+            source_url, dedupe_key = collection_row_dedupe_key(candidate.model_dump(), candidate.source)
             if not candidate.image_url:
                 skipped += 1
                 continue
-            if (candidate.source_url and candidate.source_url in existing_urls) or dedupe_key in existing_keys:
+            if (source_url and source_url in existing_urls) or dedupe_key in existing_keys:
                 skipped += 1
                 continue
-            db.execute(
+            cursor = db.execute(
                 """
                 INSERT INTO collection_items (title, source, source_url, image_url, price, sales, image_count, status, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
                 """,
                 (candidate.title, candidate.source, candidate.source_url, candidate.image_url, candidate.price, candidate.sales, candidate.image_count, timestamp),
             )
-            if candidate.source_url:
-                existing_urls.add(candidate.source_url)
+            enqueue_collection_image_download(db, cursor.lastrowid, candidate.image_url)
+            if source_url:
+                existing_urls.add(source_url)
             existing_keys.add(dedupe_key)
             imported += 1
+    if imported:
+        schedule_collection_image_task_execution()
     return imported, skipped
 
 
@@ -1499,35 +2960,64 @@ def insert_collection_candidates_with_db(db: sqlite3.Connection, candidates: lis
     imported = 0
     skipped = 0
     timestamp = now_text()
-    existing_urls = {row["source_url"] for row in db.execute("SELECT source_url FROM collection_items WHERE source_url != ''").fetchall()}
-    existing_keys = {f"{row['source']}::{row['title']}".lower() for row in db.execute("SELECT source, title FROM collection_items").fetchall()}
+    existing_urls, existing_keys = collection_existing_dedupe_sets(db)
     for candidate in candidates:
-        dedupe_key = f"{candidate.source}::{candidate.title}".lower()
+        source_url, dedupe_key = collection_row_dedupe_key(candidate.model_dump(), candidate.source)
         if not candidate.image_url:
             skipped += 1
             continue
-        if (candidate.source_url and candidate.source_url in existing_urls) or dedupe_key in existing_keys:
+        if (source_url and source_url in existing_urls) or dedupe_key in existing_keys:
             skipped += 1
             continue
-        db.execute(
+        cursor = db.execute(
             """
             INSERT INTO collection_items (title, source, source_url, image_url, price, sales, image_count, status, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
             """,
             (candidate.title, candidate.source, candidate.source_url, candidate.image_url, candidate.price, candidate.sales, candidate.image_count, timestamp),
         )
-        if candidate.source_url:
-            existing_urls.add(candidate.source_url)
+        enqueue_collection_image_download(db, cursor.lastrowid, candidate.image_url)
+        if source_url:
+            existing_urls.add(source_url)
         existing_keys.add(dedupe_key)
         imported += 1
+    if imported:
+        schedule_collection_image_task_execution()
     return imported, skipped
 
 
 def recalc(payload: ProductPayload) -> tuple[float, float, float]:
-    total_cost = round(payload.purchase_price + payload.first_mile + payload.platform_cost, 2)
-    estimated_profit = round(max(total_cost * 0.66, 0), 2)
-    gross_margin = round((estimated_profit / (total_cost + estimated_profit) * 100) if total_cost else 0, 1)
+    last_mile = payload.last_mile if payload.last_mile else payload.platform_cost
+    total_cost = round(payload.purchase_price + payload.first_mile + payload.warehouse_fee + last_mile, 2)
+    estimated_profit = round(payload.platform_quote_price - total_cost, 2) if payload.platform_quote_price > 0 else 0
+    gross_margin = round((estimated_profit / payload.platform_quote_price * 100) if payload.platform_quote_price else 0, 1)
     return total_cost, estimated_profit, gross_margin
+
+
+def quote_status(profit: float, margin: float, fallback: str = "利润正常") -> str:
+    if profit < 0:
+        return "亏损"
+    if margin == 0:
+        return fallback
+    if margin < 10:
+        return "低利润"
+    if margin < 20:
+        return "利润偏低"
+    return "利润正常"
+
+
+def product_payload_with_freight(payload: ProductPayload) -> ProductPayload:
+    if payload.weight_g <= 0:
+        return payload
+    data = payload.model_dump()
+    if float(data.get("first_mile") or 0) <= 0:
+        data["first_mile"] = calculate_first_mile(payload.weight_g)
+    if float(data.get("last_mile") or 0) <= 0:
+        data["last_mile"] = calculate_last_mile(payload.weight_g)
+        data["platform_cost"] = data["last_mile"]
+    if float(data.get("warehouse_fee") or 0) <= 0:
+        data["warehouse_fee"] = default_warehouse_fee()
+    return ProductPayload(**data)
 
 
 def init_db() -> None:
@@ -1541,7 +3031,11 @@ def init_db() -> None:
                 sku_summary TEXT NOT NULL DEFAULT '',
                 main_image TEXT,
                 purchase_price REAL NOT NULL DEFAULT 0,
+                platform_quote_price REAL NOT NULL DEFAULT 0,
+                weight_g INTEGER NOT NULL DEFAULT 0,
                 first_mile REAL NOT NULL DEFAULT 0,
+                warehouse_fee REAL NOT NULL DEFAULT 15,
+                last_mile REAL NOT NULL DEFAULT 0,
                 platform_cost REAL NOT NULL DEFAULT 0,
                 total_cost REAL NOT NULL DEFAULT 0,
                 estimated_profit REAL NOT NULL DEFAULT 0,
@@ -1580,6 +3074,10 @@ def init_db() -> None:
                 failed_count INTEGER NOT NULL DEFAULT 0,
                 export_path TEXT NOT NULL DEFAULT '',
                 run_log TEXT NOT NULL DEFAULT '',
+                failure_stage TEXT NOT NULL DEFAULT '',
+                failure_reason TEXT NOT NULL DEFAULT '',
+                evidence_path TEXT NOT NULL DEFAULT '',
+                retry_count INTEGER NOT NULL DEFAULT 0,
                 executor_id TEXT NOT NULL DEFAULT '',
                 claimed_at TEXT NOT NULL DEFAULT '',
                 heartbeat_at TEXT NOT NULL DEFAULT '',
@@ -1604,6 +3102,126 @@ def init_db() -> None:
                 note TEXT NOT NULL DEFAULT '',
                 request_path TEXT NOT NULL DEFAULT '',
                 result_count INTEGER NOT NULL DEFAULT 0,
+                parent_task_id INTEGER NOT NULL DEFAULT 0,
+                batch_index INTEGER NOT NULL DEFAULT 1,
+                batch_total INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS collection_task_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL,
+                stage TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'info',
+                message TEXT NOT NULL DEFAULT '',
+                page_no INTEGER NOT NULL DEFAULT 0,
+                parsed_count INTEGER NOT NULL DEFAULT 0,
+                imported_count INTEGER NOT NULL DEFAULT 0,
+                skipped_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(task_id) REFERENCES collection_tasks(id) ON DELETE CASCADE
+            )
+            """
+        )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS collection_import_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                status TEXT NOT NULL DEFAULT 'queued',
+                ids_json TEXT NOT NULL DEFAULT '[]',
+                total_count INTEGER NOT NULL DEFAULT 0,
+                processed_count INTEGER NOT NULL DEFAULT 0,
+                imported_count INTEGER NOT NULL DEFAULT 0,
+                skipped_count INTEGER NOT NULL DEFAULT 0,
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS collection_image_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                collection_item_id INTEGER NOT NULL,
+                source_url TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'queued',
+                local_path TEXT NOT NULL DEFAULT '',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(collection_item_id) REFERENCES collection_items(id) ON DELETE CASCADE
+            )
+            """
+        )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ai_title_cache (
+                cache_key TEXT PRIMARY KEY,
+                source_title TEXT NOT NULL DEFAULT '',
+                chinese_title TEXT NOT NULL DEFAULT '',
+                english_title TEXT NOT NULL DEFAULT '',
+                provider TEXT NOT NULL DEFAULT 'deepseek',
+                model TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS processing_title_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                status TEXT NOT NULL DEFAULT 'queued',
+                ids_json TEXT NOT NULL DEFAULT '[]',
+                failed_ids_json TEXT NOT NULL DEFAULT '[]',
+                total_count INTEGER NOT NULL DEFAULT 0,
+                processed_count INTEGER NOT NULL DEFAULT 0,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                cache_hit_count INTEGER NOT NULL DEFAULT 0,
+                note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS processing_exceptions (
+                product_id INTEGER PRIMARY KEY,
+                skc TEXT NOT NULL DEFAULT '',
+                title TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'open',
+                issues_json TEXT NOT NULL DEFAULT '[]',
+                warnings_json TEXT NOT NULL DEFAULT '[]',
+                note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE CASCADE
+            )
+            """
+        )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS processing_field_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                status TEXT NOT NULL DEFAULT 'queued',
+                ids_json TEXT NOT NULL DEFAULT '[]',
+                failed_ids_json TEXT NOT NULL DEFAULT '[]',
+                fields_json TEXT NOT NULL DEFAULT '{}',
+                start_skc TEXT NOT NULL DEFAULT '',
+                total_count INTEGER NOT NULL DEFAULT 0,
+                processed_count INTEGER NOT NULL DEFAULT 0,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                note TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
@@ -1768,6 +3386,18 @@ def init_db() -> None:
         )
         db.execute(
             """
+            CREATE TABLE IF NOT EXISTS spec_aliases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL,
+                alias TEXT NOT NULL,
+                target TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(kind, alias)
+            )
+            """
+        )
+        db.execute(
+            """
             CREATE TABLE IF NOT EXISTS prompt_templates (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
@@ -1780,9 +3410,23 @@ def init_db() -> None:
             )
             """
         )
+        title_task_columns = [row[1] for row in db.execute("PRAGMA table_info(processing_title_tasks)").fetchall()]
+        if "failed_ids_json" not in title_task_columns:
+            db.execute("ALTER TABLE processing_title_tasks ADD COLUMN failed_ids_json TEXT NOT NULL DEFAULT '[]'")
+        field_task_columns = [row[1] for row in db.execute("PRAGMA table_info(processing_field_tasks)").fetchall()]
+        if "failed_ids_json" not in field_task_columns:
+            db.execute("ALTER TABLE processing_field_tasks ADD COLUMN failed_ids_json TEXT NOT NULL DEFAULT '[]'")
         upload_columns = [row[1] for row in db.execute("PRAGMA table_info(upload_tasks)").fetchall()]
         if "run_log" not in upload_columns:
             db.execute("ALTER TABLE upload_tasks ADD COLUMN run_log TEXT NOT NULL DEFAULT ''")
+        if "failure_stage" not in upload_columns:
+            db.execute("ALTER TABLE upload_tasks ADD COLUMN failure_stage TEXT NOT NULL DEFAULT ''")
+        if "failure_reason" not in upload_columns:
+            db.execute("ALTER TABLE upload_tasks ADD COLUMN failure_reason TEXT NOT NULL DEFAULT ''")
+        if "evidence_path" not in upload_columns:
+            db.execute("ALTER TABLE upload_tasks ADD COLUMN evidence_path TEXT NOT NULL DEFAULT ''")
+        if "retry_count" not in upload_columns:
+            db.execute("ALTER TABLE upload_tasks ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0")
         if "executor_id" not in upload_columns:
             db.execute("ALTER TABLE upload_tasks ADD COLUMN executor_id TEXT NOT NULL DEFAULT ''")
         if "claimed_at" not in upload_columns:
@@ -1792,26 +3436,44 @@ def init_db() -> None:
         collection_columns = [row[1] for row in db.execute("PRAGMA table_info(collection_items)").fetchall()]
         if "image_url" not in collection_columns:
             db.execute("ALTER TABLE collection_items ADD COLUMN image_url TEXT NOT NULL DEFAULT ''")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_collection_items_status_id ON collection_items(status, id DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_collection_items_source_id ON collection_items(source, id DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_collection_items_price_id ON collection_items(price, id DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_collection_items_source_url ON collection_items(source_url)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_collection_items_created_id ON collection_items(created_at, id DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_collection_task_events_task_id ON collection_task_events(task_id, id DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_collection_import_tasks_status_id ON collection_import_tasks(status, id ASC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_collection_image_tasks_status_id ON collection_image_tasks(status, id ASC)")
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_collection_image_tasks_item_url ON collection_image_tasks(collection_item_id, source_url)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_processing_title_tasks_status_id ON processing_title_tasks(status, id ASC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_processing_exceptions_status ON processing_exceptions(status, updated_at DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_processing_field_tasks_status_id ON processing_field_tasks(status, id ASC)")
+        product_columns = [row[1] for row in db.execute("PRAGMA table_info(products)").fetchall()]
+        for column_name, ddl in [
+            ("platform_quote_price", "ALTER TABLE products ADD COLUMN platform_quote_price REAL NOT NULL DEFAULT 0"),
+            ("weight_g", "ALTER TABLE products ADD COLUMN weight_g INTEGER NOT NULL DEFAULT 0"),
+            ("warehouse_fee", "ALTER TABLE products ADD COLUMN warehouse_fee REAL NOT NULL DEFAULT 15"),
+            ("last_mile", "ALTER TABLE products ADD COLUMN last_mile REAL NOT NULL DEFAULT 0"),
+        ]:
+            if column_name not in product_columns:
+                db.execute(ddl)
         collection_task_columns = [row[1] for row in db.execute("PRAGMA table_info(collection_tasks)").fetchall()]
         for column_name, ddl in [
             ("mode", "ALTER TABLE collection_tasks ADD COLUMN mode TEXT NOT NULL DEFAULT '1688'"),
             ("collector", "ALTER TABLE collection_tasks ADD COLUMN collector TEXT NOT NULL DEFAULT '1688_public_search'"),
             ("note", "ALTER TABLE collection_tasks ADD COLUMN note TEXT NOT NULL DEFAULT ''"),
             ("request_path", "ALTER TABLE collection_tasks ADD COLUMN request_path TEXT NOT NULL DEFAULT ''"),
+            ("parent_task_id", "ALTER TABLE collection_tasks ADD COLUMN parent_task_id INTEGER NOT NULL DEFAULT 0"),
+            ("batch_index", "ALTER TABLE collection_tasks ADD COLUMN batch_index INTEGER NOT NULL DEFAULT 1"),
+            ("batch_total", "ALTER TABLE collection_tasks ADD COLUMN batch_total INTEGER NOT NULL DEFAULT 1"),
         ]:
             if column_name not in collection_task_columns:
                 db.execute(ddl)
         api_count = db.execute("SELECT COUNT(*) AS total FROM api_configs").fetchone()["total"]
         if api_count == 0:
-            timestamp = now_text()
-            db.executemany(
-                "INSERT INTO api_configs (key, name, enabled, base_url, model, api_key, usage, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                [
-                    ("deepseek", "DeepSeek 文案生成", 1, "https://api.deepseek.com", "deepseek-chat", "", "标题生成 / 文案优化", timestamp),
-                    ("image", "Nano Banana 图生图", 1, NANOBANANA_SUBMIT_URL, "nano-banana", "", "图片处理 / 图生图", timestamp),
-                ],
-            )
+            sync_builtin_api_configs(db, force_keys={"deepseek", "image", "vision"})
         else:
+            sync_builtin_api_configs(db)
             deepseek_api = db.execute("SELECT * FROM api_configs WHERE key = 'deepseek'").fetchone()
             if deepseek_api and (looks_corrupted_text(deepseek_api["name"]) or looks_corrupted_text(deepseek_api["usage"])):
                 db.execute(
@@ -1884,8 +3546,18 @@ def init_db() -> None:
                     ("temu_append_sku_suffix", "true", timestamp),
                     ("temu_add_model_info", "false", timestamp),
                     ("temu_model_index", "2", timestamp),
+                    ("default_processing_declared_price_mode", "add", timestamp),
+                    ("default_processing_declared_price", "0", timestamp),
+                    ("default_processing_weight_g", "350", timestamp),
+                    ("default_processing_length_cm", "15", timestamp),
+                    ("default_processing_width_cm", "10", timestamp),
+                    ("default_processing_height_cm", "2", timestamp),
+                    ("default_processing_stock", "999", timestamp),
+                    ("default_processing_ship_days", "9", timestamp),
+                    ("default_processing_start_skc", "", timestamp),
                 ],
             )
+            sync_builtin_settings(db, force_keys={"onebound_key", "onebound_secret", "enable_external_collection"})
         else:
             timestamp = now_text()
             defaults = {
@@ -1937,16 +3609,26 @@ def init_db() -> None:
                 "temu_append_sku_suffix": "true",
                 "temu_add_model_info": "false",
                 "temu_model_index": "2",
+                "default_processing_declared_price_mode": "add",
+                "default_processing_declared_price": "0",
+                "default_processing_weight_g": "350",
+                "default_processing_length_cm": "15",
+                "default_processing_width_cm": "10",
+                "default_processing_height_cm": "2",
+                "default_processing_stock": "999",
+                "default_processing_ship_days": "9",
+                "default_processing_start_skc": "",
             }
             for key, value in defaults.items():
                 exists = db.execute("SELECT 1 FROM app_settings WHERE key = ?", (key,)).fetchone()
                 if not exists:
                     db.execute("INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)", (key, value, timestamp))
+            sync_builtin_settings(db)
         prompt_count = db.execute("SELECT COUNT(*) AS total FROM prompt_templates").fetchone()["total"]
         corrupt_prompt_count = db.execute(
             """
             SELECT COUNT(*) AS total FROM prompt_templates
-            WHERE name LIKE '%???%' OR category LIKE '%???%' OR prompt_type LIKE '%???%' OR usage LIKE '%???%' OR content LIKE '%???%' OR status LIKE '%???%'
+            WHERE name LIKE '%??%' OR category LIKE '%??%' OR prompt_type LIKE '%??%' OR usage LIKE '%??%' OR content LIKE '%??%' OR status LIKE '%??%'
             """
         ).fetchone()["total"]
         if prompt_count and corrupt_prompt_count:
@@ -1963,11 +3645,142 @@ def init_db() -> None:
 @app.on_event("startup")
 def startup() -> None:
     init_db()
+    resume_collection_task_queue()
+    resume_collection_import_task_queue()
+    resume_collection_image_task_queue()
+    resume_processing_title_task_queue()
+    resume_processing_field_task_queue()
 
 
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(FRONTEND_DIR / "index.html")
+
+
+@app.get("/api/health")
+def health() -> dict[str, object]:
+    return {"ok": True, "app": "upload-assistant", "data_dir": str(DATA_DIR), "time": now_text()}
+
+
+def spec_alias_from_row(row: sqlite3.Row) -> SpecAliasItem:
+    return SpecAliasItem(
+        id=int(row["id"]),
+        kind=row["kind"],
+        alias=row["alias"],
+        target=row["target"],
+        updated_at=row["updated_at"] or "",
+    )
+
+
+@app.get("/api/spec-mappings/colors")
+def spec_mapping_colors() -> dict[str, object]:
+    custom_aliases = load_spec_alias_map("color")
+    return {
+        "groups": [{"name": name, "colors": colors} for name, colors in PLATFORM_COLOR_GROUPS],
+        "standard_colors": PLATFORM_STANDARD_COLORS,
+        "alias_count": len(COLOR_ALIAS_MAP) + len(custom_aliases),
+        "custom_aliases": custom_aliases,
+    }
+
+
+@app.get("/api/spec-mappings/sizes")
+def spec_mapping_sizes() -> dict[str, object]:
+    custom_aliases = load_spec_alias_map("size")
+    return {
+        "name": "女士牛仔短裤",
+        "sizes": STANDARD_UPLOAD_SIZES,
+        "alias_map": size_alias_map(),
+        "custom_aliases": custom_aliases,
+    }
+
+
+def extract_spec_exception_values(lines: list[str]) -> list[tuple[str, str]]:
+    values: list[tuple[str, str]] = []
+    for line in lines:
+        text = str(line or "")
+        if text.startswith("颜色无法匹配标准色："):
+            raw_values = text.split("：", 1)[1]
+            for value in re.split(r"[、,，/]+", raw_values):
+                clean_value = value.strip()
+                if clean_value:
+                    values.append(("color", clean_value))
+        elif text.startswith("不支持尺码："):
+            raw_values = text.split("：", 1)[1]
+            for value in re.split(r"[、,，/]+", raw_values):
+                clean_value = value.strip().upper()
+                if clean_value:
+                    values.append(("size", clean_value))
+    return values
+
+
+@app.get("/api/spec-mappings/exceptions", response_model=list[SpecExceptionSummaryItem])
+def list_spec_exception_summaries() -> list[SpecExceptionSummaryItem]:
+    summary: dict[tuple[str, str], set[int]] = {}
+    with connect() as db:
+        rows = db.execute("SELECT product_id, issues_json, warnings_json FROM processing_exceptions WHERE status = 'open'").fetchall()
+    for row in rows:
+        product_id = int(row["product_id"])
+        lines = json.loads(row["issues_json"] or "[]") + json.loads(row["warnings_json"] or "[]")
+        for kind, value in extract_spec_exception_values(lines):
+            summary.setdefault((kind, value), set()).add(product_id)
+    items = [
+        SpecExceptionSummaryItem(kind=kind, value=value, count=len(product_ids), product_ids=sorted(product_ids))
+        for (kind, value), product_ids in summary.items()
+    ]
+    return sorted(items, key=lambda item: (-item.count, item.kind, item.value))
+
+
+@app.get("/api/spec-mappings/aliases", response_model=list[SpecAliasItem])
+def list_spec_aliases(kind: str = "") -> list[SpecAliasItem]:
+    clauses: list[str] = []
+    params: list[object] = []
+    if kind:
+        clauses.append("kind = ?")
+        params.append(kind)
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with connect() as db:
+        rows = db.execute(f"SELECT * FROM spec_aliases {where_sql} ORDER BY updated_at DESC, id DESC", params).fetchall()
+    return [spec_alias_from_row(row) for row in rows]
+
+
+@app.post("/api/spec-mappings/aliases", response_model=SpecAliasItem)
+def save_spec_alias(payload: SpecAliasPayload) -> SpecAliasItem:
+    kind = payload.kind.strip().lower()
+    alias = payload.alias.strip()
+    target = payload.target.strip()
+    if kind not in {"color", "size"}:
+        raise HTTPException(status_code=400, detail="规格类型必须是 color 或 size")
+    if not alias:
+        raise HTTPException(status_code=400, detail="供应商写法不能为空")
+    if kind == "color" and target not in PLATFORM_STANDARD_COLORS:
+        raise HTTPException(status_code=400, detail="目标颜色不在标准色表中")
+    if kind == "size" and target.upper() not in RPA_ALLOWED_UPLOAD_SIZES:
+        raise HTTPException(status_code=400, detail="目标尺码不在标准尺码中")
+    if kind == "size":
+        alias = alias.upper()
+        target = target.upper()
+    timestamp = now_text()
+    with connect() as db:
+        db.execute(
+            """
+            INSERT INTO spec_aliases (kind, alias, target, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(kind, alias) DO UPDATE SET target = excluded.target, updated_at = excluded.updated_at
+            """,
+            (kind, alias, target, timestamp),
+        )
+        row = db.execute("SELECT * FROM spec_aliases WHERE kind = ? AND alias = ?", (kind, alias)).fetchone()
+    return spec_alias_from_row(row)
+
+
+@app.delete("/api/spec-mappings/aliases/{alias_id}")
+def delete_spec_alias(alias_id: int) -> dict[str, object]:
+    with connect() as db:
+        row = db.execute("SELECT * FROM spec_aliases WHERE id = ?", (alias_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="规格别名不存在")
+        db.execute("DELETE FROM spec_aliases WHERE id = ?", (alias_id,))
+    return {"deleted": True, "id": alias_id}
 
 
 @app.get("/api/image-proxy")
@@ -2014,9 +3827,45 @@ def fetch_external_image(url: str) -> tuple[bytes, str]:
         return response.read(), content_type
 
 
+def save_collection_image_from_url(collection_item_id: int, image_url: str) -> str:
+    clean_url = str(image_url or "").strip()
+    if not clean_url:
+        return ""
+    if clean_url.startswith("/images/"):
+        return clean_url
+    try:
+        content, content_type = fetch_external_image(clean_url)
+    except (urllib.error.URLError, TimeoutError, ValueError):
+        return ""
+    extension = image_extension_from_content_type(content_type, clean_url)
+    target_dir = IMAGE_DIR / "collection" / str(collection_item_id)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / f"main{extension}"
+    for old_file in target_dir.glob("main.*"):
+        old_file.unlink(missing_ok=True)
+    target.write_bytes(content)
+    return f"/images/collection/{collection_item_id}/{target.name}"
+
+
+def copy_local_image_to_product(product_id: int, image_url: str, name: str = "main") -> str:
+    source = local_image_path_from_url(image_url)
+    if not source:
+        return ""
+    product_dir = IMAGE_DIR / str(product_id)
+    product_dir.mkdir(parents=True, exist_ok=True)
+    suffix = source.suffix.lower() if source.suffix.lower() in RPA_IMAGE_EXTENSIONS else ".jpg"
+    target = product_dir / f"{name}{suffix}"
+    for old_file in product_dir.glob(f"{name}.*"):
+        old_file.unlink(missing_ok=True)
+    shutil.copyfile(source, target)
+    return f"/images/{product_id}/{target.name}"
+
+
 def save_product_main_image_from_url(product_id: int, image_url: str) -> str:
     if not image_url:
         return ""
+    if str(image_url).strip().startswith("/images/"):
+        return copy_local_image_to_product(product_id, image_url)
     try:
         content, content_type = fetch_external_image(image_url)
     except (urllib.error.URLError, TimeoutError, ValueError):
@@ -2056,6 +3905,10 @@ def save_processed_image_from_url(product_id: int, image_url: str) -> str:
         old_file.unlink(missing_ok=True)
     target.write_bytes(content)
     return f"/images/{product_id}/{target.name}"
+
+
+def save_processed_image_from_local(product_id: int, image_url: str) -> str:
+    return copy_local_image_to_product(product_id, image_url, name="processed")
 
 
 def image_task_from_row(row: sqlite3.Row) -> ImageTask:
@@ -2181,7 +4034,25 @@ def normalize_color_alias(value: object) -> str:
     return re.sub(r"[\s\-_【】\[\]（）(){}:：,，/\\|;；]+", "", str(value or "").strip().lower())
 
 
+def load_spec_alias_map(kind: str) -> dict[str, str]:
+    try:
+        with connect() as db:
+            rows = db.execute("SELECT alias, target FROM spec_aliases WHERE kind = ?", (kind,)).fetchall()
+        return {normalize_color_alias(row["alias"]): row["target"] for row in rows if row["alias"] and row["target"]}
+    except sqlite3.Error:
+        return {}
+
+
 COLOR_ALIAS_MAP = {normalize_color_alias(alias): color for alias, color in COLOR_ALIAS_ENTRIES}
+
+
+def color_alias_map() -> dict[str, str]:
+    return {**COLOR_ALIAS_MAP, **load_spec_alias_map("color")}
+
+
+def size_alias_map() -> dict[str, str]:
+    custom = {key.upper(): value.upper() for key, value in load_spec_alias_map("size").items()}
+    return {**SIZE_ALIAS_MAP, **custom}
 
 
 def resolve_known_color(value: str) -> str:
@@ -2189,13 +4060,14 @@ def resolve_known_color(value: str) -> str:
     if not text:
         return ""
     normalized = normalize_color_alias(text)
-    if normalized in COLOR_ALIAS_MAP:
-        return COLOR_ALIAS_MAP[normalized]
+    aliases = color_alias_map()
+    if normalized in aliases:
+        return aliases[normalized]
     for part in re.split(r"[\r\n,，、/]+", text):
-        color = COLOR_ALIAS_MAP.get(normalize_color_alias(part))
+        color = aliases.get(normalize_color_alias(part))
         if color:
             return color
-    for alias, color in COLOR_ALIAS_MAP.items():
+    for alias, color in aliases.items():
         if alias and alias in normalized:
             return color
     return ""
@@ -2215,6 +4087,19 @@ def safe_path_segment(value: str, fallback: str = "item") -> str:
     text = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", text)
     text = re.sub(r"\s+", "_", text).strip(" ._")
     return text[:80] or fallback
+
+
+COLOR_ENGLISH_MAP: dict[str, str] = {}
+for alias, color in COLOR_ALIAS_ENTRIES:
+    if re.fullmatch(r"[A-Za-z][A-Za-z\s_-]*", str(alias or "")) and color not in COLOR_ENGLISH_MAP:
+        COLOR_ENGLISH_MAP[color] = safe_path_segment(str(alias), color).lower()
+
+
+def color_english_label(value: str) -> str:
+    color = clean_color_label(value) or str(value or "").strip()
+    if not color:
+        return "COLOR"
+    return COLOR_ENGLISH_MAP.get(color, safe_path_segment(color, "COLOR")).upper()
 
 
 def contains_cjk(value: str) -> bool:
@@ -2405,20 +4290,44 @@ def render_title_prompt(template: str, item: ProcessingItem) -> str:
     return prompt
 
 
-def extract_title_from_model_response(response_text: str, fallback_source_title: str) -> str:
-    text = str(response_text or "").strip().strip("` ")
-    if text.startswith("json"):
+def clean_generated_title(value: str, limit: int = 120) -> str:
+    text = str(value or "").strip().strip("` ").strip()
+    if text.lower().startswith("json"):
         text = text[4:].strip()
+    text = re.sub(r"^[-*\d.\u3001\s]+", "", text)
+    text = text.strip('\\"\u201c\u201d\u2018\u2019')
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:limit]
+
+
+def extract_title_from_model_response(response_text: str, fallback_source_title: str) -> str:
+    text = clean_generated_title(response_text)
     try:
         parsed = json.loads(text)
         if isinstance(parsed, dict):
             title = str(parsed.get("title_en") or parsed.get("english_title") or parsed.get("title") or "").strip()
             if title:
-                return title[:120]
+                return clean_generated_title(title)
     except Exception:
         pass
-    return text.strip('\"??')[:120] or english_title_fallback(fallback_source_title)
+    return text or english_title_fallback(fallback_source_title)
 
+
+def extract_batch_title_pairs(response_text: str) -> list[dict[str, str]]:
+    text = str(response_text or "").strip().strip("` ")
+    if text.lower().startswith("json"):
+        text = text[4:].strip()
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            return [item for item in parsed if isinstance(item, dict)]
+        if isinstance(parsed, dict):
+            items = parsed.get("items") or parsed.get("titles") or parsed.get("results")
+            if isinstance(items, list):
+                return [item for item in items if isinstance(item, dict)]
+    except Exception:
+        pass
+    return []
 
 def image_url_for_vision(image_url: str) -> str:
     clean_url = str(image_url or "").strip()
@@ -2633,11 +4542,9 @@ def auto_assign_color_images(payload: AutoAssignColorImagesPayload) -> AutoAssig
 
 
 def save_manual_color_image_assignment(payload: ManualColorImageAssignmentPayload) -> list[ColorImageAssignment]:
-    color = str(payload.color or "").strip()
+    color = normalize_assignment_color(payload.color)
     image_url = str(payload.image_url or "").strip()
-    slot_index = max(0, min(4, int(payload.slot_index or 0)))
-    if not color:
-        raise HTTPException(status_code=400, detail="颜色不能为空")
+    slot_index = max(0, min(99, int(payload.slot_index or 0)))
     with connect() as db:
         product = db.execute("SELECT id FROM products WHERE id = ?", (payload.product_id,)).fetchone()
         if not product:
@@ -2656,36 +4563,108 @@ def save_manual_color_image_assignment(payload: ManualColorImageAssignmentPayloa
                 """,
                 (payload.product_id, color, image_url, slot_index, timestamp, timestamp),
             )
+        if not image_url:
+            compact_color_image_assignments(db, payload.product_id, color)
         db.commit()
     return list_color_image_assignments(payload.product_id)
 
 
-def save_detail_image_slot(product_id: int, slot_index: int, image_url: str) -> list[DetailImageAssignment]:
+def compact_detail_image_assignments(db: sqlite3.Connection, product_id: int) -> None:
+    rows = db.execute(
+        """
+        SELECT id FROM product_detail_image_assignments
+        WHERE product_id = ? AND image_url != ''
+        ORDER BY sort_order, id
+        """,
+        (product_id,),
+    ).fetchall()
+    timestamp = now_text()
+    for index, row in enumerate(rows):
+        db.execute(
+            "UPDATE product_detail_image_assignments SET sort_order = ?, updated_at = ? WHERE id = ?",
+            (index, timestamp, row["id"]),
+        )
+
+
+def save_detail_image_slot(product_id: int, slot_index: int, image_url: str, remove_image_url: str = "") -> list[DetailImageAssignment]:
     clean_url = str(image_url or "").strip()
-    safe_slot_index = max(0, min(19, int(slot_index or 0)))
+    safe_slot_index = max(0, min(99, int(slot_index or 0)))
     with connect() as db:
         product = db.execute("SELECT id FROM products WHERE id = ?", (product_id,)).fetchone()
         if not product:
             raise HTTPException(status_code=404, detail="商品不存在")
         timestamp = now_text()
-        db.execute(
+        result = db.execute(
             "DELETE FROM product_detail_image_assignments WHERE product_id = ? AND sort_order = ?",
             (product_id, safe_slot_index),
         )
-        db.execute(
-            """
-            INSERT INTO product_detail_image_assignments
-            (product_id, image_url, source, sort_order, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (product_id, clean_url, 'manual_drag' if clean_url else 'manual_clear', safe_slot_index, timestamp, timestamp),
-        )
+        deleted_count = result.rowcount
+        remove_url = str(remove_image_url or "").strip()
+        if not clean_url and deleted_count == 0 and remove_url:
+            row = db.execute(
+                """
+                SELECT id FROM product_detail_image_assignments
+                WHERE product_id = ? AND image_url = ?
+                ORDER BY sort_order, id
+                LIMIT 1
+                """,
+                (product_id, remove_url),
+            ).fetchone()
+            if row:
+                delete_result = db.execute("DELETE FROM product_detail_image_assignments WHERE id = ?", (row["id"],))
+                deleted_count = delete_result.rowcount
+        if not clean_url and deleted_count == 0:
+            row = db.execute(
+                """
+                SELECT id FROM product_detail_image_assignments
+                WHERE product_id = ? AND image_url != ''
+                ORDER BY sort_order, id
+                LIMIT 1 OFFSET ?
+                """,
+                (product_id, safe_slot_index),
+            ).fetchone()
+            if row:
+                db.execute("DELETE FROM product_detail_image_assignments WHERE id = ?", (row["id"],))
+        if clean_url:
+            db.execute(
+                """
+                INSERT INTO product_detail_image_assignments
+                (product_id, image_url, source, sort_order, created_at, updated_at)
+                VALUES (?, ?, 'manual_drag', ?, ?, ?)
+                """,
+                (product_id, clean_url, safe_slot_index, timestamp, timestamp),
+            )
+        else:
+            compact_detail_image_assignments(db, product_id)
+        db.commit()
+    return list_detail_image_assignments(product_id)
+
+
+def replace_detail_image_assignments(product_id: int, image_urls: list[str]) -> list[DetailImageAssignment]:
+    clean_urls = [str(url or "").strip() for url in image_urls if str(url or "").strip()]
+    with connect() as db:
+        product = db.execute("SELECT id FROM products WHERE id = ?", (product_id,)).fetchone()
+        if not product:
+            raise HTTPException(status_code=404, detail="商品不存在")
+        timestamp = now_text()
+        db.execute("DELETE FROM product_detail_image_assignments WHERE product_id = ?", (product_id,))
+        for index, url in enumerate(clean_urls[:100]):
+            db.execute(
+                """
+                INSERT INTO product_detail_image_assignments
+                (product_id, image_url, source, sort_order, created_at, updated_at)
+                VALUES (?, ?, 'manual_drag', ?, ?, ?)
+                """,
+                (product_id, url, index, timestamp, timestamp),
+            )
         db.commit()
     return list_detail_image_assignments(product_id)
 
 
 def save_manual_detail_image_assignment(payload: ManualDetailImageAssignmentPayload) -> list[DetailImageAssignment]:
-    return save_detail_image_slot(payload.product_id, payload.slot_index, payload.image_url)
+    if payload.remaining_image_urls:
+        return replace_detail_image_assignments(payload.product_id, payload.remaining_image_urls)
+    return save_detail_image_slot(payload.product_id, payload.slot_index, payload.image_url, payload.remove_image_url)
 
 
 def normalize_image_dedupe_key(image_url: str) -> str:
@@ -2811,6 +4790,43 @@ def default_english_title(title: str) -> str:
     return f"{title} for Temu listing"
 
 
+def normalize_assignment_color(value: str) -> str:
+    return clean_color_label(value) or "混合色"
+
+
+def compact_color_image_assignments(db: sqlite3.Connection, product_id: int, color: str) -> None:
+    rows = db.execute(
+        """
+        SELECT id FROM product_color_image_assignments
+        WHERE product_id = ? AND color = ? AND image_url != ''
+        ORDER BY sort_order, id
+        """,
+        (product_id, color),
+    ).fetchall()
+    timestamp = now_text()
+    for index, row in enumerate(rows):
+        db.execute(
+            "UPDATE product_color_image_assignments SET sort_order = ?, updated_at = ? WHERE id = ?",
+            (index, timestamp, row["id"]),
+        )
+
+
+def seed_color_first_image_for_import(db: sqlite3.Connection, product_id: int, image_url: str) -> None:
+    clean_url = str(image_url or "").strip()
+    if not clean_url:
+        return
+    timestamp = now_text()
+    db.execute(
+        """
+        INSERT INTO product_color_image_assignments
+        (product_id, color, image_url, source, sort_order, is_auto, confidence, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 0, 1, 0.6, ?, ?)
+        ON CONFLICT DO NOTHING
+        """,
+        (product_id, "混合色", clean_url, "collection_first_image", timestamp, timestamp),
+    )
+
+
 def create_processing_override_for_import(db: sqlite3.Connection, product_id: int, product: ProductPayload, source_url: str, total_cost: float) -> None:
     declared_price = round(float(total_cost) + 239, 2)
     db.execute(
@@ -2845,6 +4861,72 @@ def create_processing_override_for_import(db: sqlite3.Connection, product_id: in
     )
 
 
+def import_collection_row_as_product(db: sqlite3.Connection, row: sqlite3.Row) -> Product:
+    skc = f"DS{datetime.now().strftime('%y%m%d')}{row['id']:03d}"
+    offset = 0
+    base_skc = skc
+    while db.execute("SELECT 1 FROM products WHERE skc = ?", (skc,)).fetchone():
+        offset += 1
+        skc = increment_skc_value(base_skc, offset)
+    has_collection_image = bool(row["image_url"])
+    item = ProductPayload(
+        title=row["title"],
+        skc=skc,
+        sku_summary="pending",
+        purchase_price=float(row["price"]),
+        platform_quote_price=0,
+        weight_g=int(float(get_setting_value("default_processing_weight_g", "350") or 350)),
+        first_mile=28.0,
+        warehouse_fee=default_warehouse_fee(),
+        last_mile=6.5,
+        platform_cost=6.5,
+        status="待处理" if has_collection_image else "pending_main_image",
+    )
+    total_cost, estimated_profit, gross_margin = recalc(item)
+    timestamp = now_text()
+    cursor = db.execute(
+        """
+        INSERT INTO products (
+            title, skc, sku_summary, purchase_price, first_mile, platform_cost,
+            platform_quote_price, weight_g, warehouse_fee, last_mile,
+            total_cost, estimated_profit, gross_margin, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            item.title,
+            item.skc,
+            item.sku_summary,
+            item.purchase_price,
+            item.first_mile,
+            item.platform_cost,
+            item.platform_quote_price,
+            item.weight_g,
+            item.warehouse_fee,
+            item.last_mile,
+            total_cost,
+            estimated_profit,
+            gross_margin,
+            item.status,
+            timestamp,
+            timestamp,
+        ),
+    )
+    product_id = cursor.lastrowid
+    main_image = save_product_main_image_from_url(product_id, row["image_url"])
+    if main_image:
+        db.execute("UPDATE products SET main_image = ?, status = ?, updated_at = ? WHERE id = ?", (main_image, "待处理", now_text(), product_id))
+    elif has_collection_image:
+        db.execute("UPDATE products SET status = ?, updated_at = ? WHERE id = ?", ("pending_main_image", now_text(), product_id))
+    image_source_url = row["image_url"] or row["source_url"]
+    create_processing_override_for_import(db, product_id, item, image_source_url, total_cost)
+    seed_color_first_image_for_import(db, product_id, main_image or row["image_url"])
+    if row["source_url"]:
+        try_enrich_product_from_onebound_detail(db, product_id, row["source_url"])
+    db.execute("UPDATE collection_items SET selected = 1, status = 'imported' WHERE id = ?", (row["id"],))
+    product_row = db.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+    return product_from_row(product_row)
+
+
 @app.get("/api/products", response_model=list[Product])
 def list_products(q: str = "", status: str = "", image: str = "") -> list[Product]:
     keyword = f"%{q.strip()}%"
@@ -2854,8 +4936,19 @@ def list_products(q: str = "", status: str = "", image: str = "") -> list[Produc
         clauses.append("(title LIKE ? OR skc LIKE ? OR sku_summary LIKE ?)")
         params.extend([keyword, keyword, keyword])
     if status.strip():
-        clauses.append("status = ?")
-        params.append(status.strip())
+        status_value = status.strip()
+        status_groups = {
+            "待处理": ["待处理", "pending", "needs_review", "pending_main_image", "待补主图"],
+            "待补主图": ["待补主图", "pending_main_image", "needs_image"],
+            "待上货": ["待上货", "ready_upload", "ready_to_export", "export_ready", "利润正常"],
+            "已上货": ["已上货", "uploaded", "rpa_success"],
+            "上货失败": ["上货失败", "upload_failed", "rpa_failed"],
+            "利润异常": ["亏损", "低利润", "利润偏低"],
+        }
+        matched_statuses = status_groups.get(status_value, [status_value])
+        placeholders = ",".join("?" for _ in matched_statuses)
+        clauses.append(f"status IN ({placeholders})")
+        params.extend(matched_statuses)
     if image == "has":
         clauses.append("main_image IS NOT NULL AND main_image != ''")
     elif image == "missing":
@@ -2871,7 +4964,7 @@ def dashboard() -> dict[str, int]:
     with connect() as db:
         product_count = db.execute("SELECT COUNT(*) AS total FROM products").fetchone()["total"]
         missing_images = db.execute("SELECT COUNT(*) AS total FROM products WHERE main_image IS NULL OR main_image = ''").fetchone()["total"]
-        ready_products = product_count - missing_images
+        ready_products = db.execute("SELECT COUNT(DISTINCT skc) AS total FROM publish_records WHERE result = 'Success' AND skc != ''").fetchone()["total"]
         task_count = db.execute("SELECT COUNT(*) AS total FROM upload_tasks").fetchone()["total"]
         latest_ready_tasks = db.execute("SELECT COUNT(*) AS total FROM upload_tasks WHERE status IN ('export_ready', 'rpa_success')").fetchone()["total"]
     return {
@@ -2885,13 +4978,19 @@ def dashboard() -> dict[str, int]:
 
 @app.get("/api/system/status")
 def system_status() -> dict[str, object]:
+    runtime_dirs = ensure_runtime_directories()
     upload = upload_preflight()
     collection = collection_preflight()
     script_dir = configured_script_dir()
     cos = cos_preflight()
+    directory_checks = [
+        {"key": key, "path": str(path), "exists": path.exists(), "writable": os.access(path, os.W_OK)}
+        for key, path in LOCAL_DATA_DIRECTORIES.items()
+    ]
     checklist = [
         {"key": "database", "label": "本地数据库", "ok": DB_PATH.exists(), "action": "无需处理" if DB_PATH.exists() else "启动应用会自动创建数据库"},
         {"key": "image_dir", "label": "图片目录", "ok": IMAGE_DIR.exists(), "action": "无需处理" if IMAGE_DIR.exists() else "创建 data/images 目录"},
+        {"key": "runtime_dirs", "label": "本地运行目录", "ok": all(item["exists"] and item["writable"] for item in directory_checks), "action": "本地数据/日志/导出/采集目录可写"},
         {"key": "real_rpa", "label": "真实 RPA", "ok": True, "action": "点击正式上货直接执行"},
         {"key": "safe_collection", "label": "外部采集安全", "ok": get_setting_value("enable_external_collection", "false") != "true", "action": "默认关闭，安全" if get_setting_value("enable_external_collection", "false") != "true" else "确认要执行外部采集后再保持开启"},
         {"key": "upload_preflight", "label": "上货预检", "ok": bool(upload["ready"]), "action": "脚本和图片目录就绪" if upload["ready"] else "检查店小秘脚本目录和图片目录"},
@@ -2904,6 +5003,9 @@ def system_status() -> dict[str, object]:
         "database_exists": DB_PATH.exists(),
         "image_dir": str(IMAGE_DIR),
         "image_dir_exists": IMAGE_DIR.exists(),
+        "data_dir": str(DATA_DIR),
+        "runtime_dirs": runtime_dirs,
+        "directory_checks": directory_checks,
         "enable_real_rpa": "true",
         "enable_external_collection": get_setting_value("enable_external_collection", "false"),
         "collection_mode": get_setting_value("collection_mode", "1688"),
@@ -2958,6 +5060,7 @@ def list_downloads() -> dict[str, object]:
 
 @app.post("/api/products", response_model=Product)
 def create_product(payload: ProductPayload) -> Product:
+    payload = product_payload_with_freight(payload)
     total_cost, estimated_profit, gross_margin = recalc(payload)
     timestamp = now_text()
     try:
@@ -2966,8 +5069,9 @@ def create_product(payload: ProductPayload) -> Product:
                 """
                 INSERT INTO products (
                     title, skc, sku_summary, purchase_price, first_mile, platform_cost,
+                    platform_quote_price, weight_g, warehouse_fee, last_mile,
                     total_cost, estimated_profit, gross_margin, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     payload.title,
@@ -2976,6 +5080,10 @@ def create_product(payload: ProductPayload) -> Product:
                     payload.purchase_price,
                     payload.first_mile,
                     payload.platform_cost,
+                    payload.platform_quote_price,
+                    payload.weight_g,
+                    payload.warehouse_fee,
+                    payload.last_mile,
                     total_cost,
                     estimated_profit,
                     gross_margin,
@@ -2992,6 +5100,7 @@ def create_product(payload: ProductPayload) -> Product:
 
 @app.put("/api/products/{product_id}", response_model=Product)
 def update_product(product_id: int, payload: ProductPayload) -> Product:
+    payload = product_payload_with_freight(payload)
     total_cost, estimated_profit, gross_margin = recalc(payload)
     try:
         with connect() as db:
@@ -2999,7 +5108,8 @@ def update_product(product_id: int, payload: ProductPayload) -> Product:
                 """
                 UPDATE products
                 SET title = ?, skc = ?, sku_summary = ?, purchase_price = ?, first_mile = ?,
-                    platform_cost = ?, total_cost = ?, estimated_profit = ?, gross_margin = ?,
+                    platform_cost = ?, platform_quote_price = ?, weight_g = ?, warehouse_fee = ?, last_mile = ?,
+                    total_cost = ?, estimated_profit = ?, gross_margin = ?,
                     status = ?, updated_at = ?
                 WHERE id = ?
                 """,
@@ -3010,6 +5120,10 @@ def update_product(product_id: int, payload: ProductPayload) -> Product:
                     payload.purchase_price,
                     payload.first_mile,
                     payload.platform_cost,
+                    payload.platform_quote_price,
+                    payload.weight_g,
+                    payload.warehouse_fee,
+                    payload.last_mile,
                     total_cost,
                     estimated_profit,
                     gross_margin,
@@ -3024,6 +5138,91 @@ def update_product(product_id: int, payload: ProductPayload) -> Product:
     except sqlite3.IntegrityError as exc:
         raise HTTPException(status_code=409, detail="SKC 已存在") from exc
     return product_from_row(row)
+
+
+@app.post("/api/products/quotes/import-text", response_model=QuoteImportResult)
+def import_product_quotes_text(payload: QuoteImportPayload) -> QuoteImportResult:
+    return apply_quote_rows(parse_quote_rows_from_text(payload.text))
+
+
+@app.post("/api/products/quotes/import-file", response_model=QuoteImportResult)
+def import_product_quotes_file(file: UploadFile = File(...)) -> QuoteImportResult:
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in {".xlsx", ".csv", ".txt"}:
+        raise HTTPException(status_code=400, detail="请上传 xlsx、csv 或 txt 核价表")
+    import_dir = DATA_DIR / "imports"
+    import_dir.mkdir(parents=True, exist_ok=True)
+    target = import_dir / f"quote_{datetime.now().strftime('%Y%m%d_%H%M%S')}{suffix}"
+    target.write_bytes(file.file.read())
+    rows = parse_quote_rows_from_file(target)
+    return apply_quote_rows(rows)
+
+
+@app.post("/api/products/freight/import-file", response_model=FreightImportResult)
+def import_freight_file(file: UploadFile = File(...), default_zone: str = Form("zone5")) -> FreightImportResult:
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in {".xlsx", ".xls"}:
+        raise HTTPException(status_code=400, detail="请上传 xlsx 或 xls 运费表")
+    import_dir = DATA_DIR / "imports"
+    import_dir.mkdir(parents=True, exist_ok=True)
+    target = import_dir / f"freight_{datetime.now().strftime('%Y%m%d_%H%M%S')}{suffix}"
+    target.write_bytes(file.file.read())
+    rules = parse_freight_rules(target)
+    result = FreightImportResult(
+        first_mile_count=len(rules.get("first_mile", [])),
+        last_mile_count=len(rules.get("last_mile", [])),
+        default_zone=normalize_header(default_zone or "zone5") or "zone5",
+        saved=True,
+    )
+    if result.first_mile_count <= 0 or result.last_mile_count <= 0:
+        raise HTTPException(status_code=400, detail="运费表缺少头程或尾程规则，请检查 Sheet1/Sheet2 表头")
+    with connect() as db:
+        save_setting_value(db, FREIGHT_RULES_SETTING_KEY, json.dumps(rules, ensure_ascii=False))
+        save_setting_value(db, DEFAULT_FREIGHT_ZONE_KEY, result.default_zone)
+        save_setting_value(db, DEFAULT_WAREHOUSE_FEE_KEY, str(default_warehouse_fee()))
+        recalculate_all_product_freight(db)
+    return result
+
+
+@app.get("/api/products/freight/rules")
+def get_freight_rules() -> dict[str, object]:
+    rules = freight_rules()
+    first_mile = rules.get("first_mile", []) if isinstance(rules.get("first_mile"), list) else []
+    last_mile = rules.get("last_mile", []) if isinstance(rules.get("last_mile"), list) else []
+    return {
+        "default_zone": get_setting_value(DEFAULT_FREIGHT_ZONE_KEY, "zone5"),
+        "warehouse_fee": default_warehouse_fee(),
+        "first_mile_count": len(first_mile),
+        "last_mile_count": len(last_mile),
+        "first_mile": first_mile[:20],
+        "last_mile": last_mile[:50],
+    }
+
+
+@app.put("/api/products/freight/rules")
+def save_freight_rules(payload: FreightRulesPayload) -> dict[str, object]:
+    zone = normalize_freight_zone(payload.default_zone)
+    warehouse_fee = float(payload.warehouse_fee or 0)
+    if warehouse_fee < 0:
+        raise HTTPException(status_code=400, detail="仓库操作费不能为负数")
+    rules = freight_payload_to_rules(payload)
+    with connect() as db:
+        save_setting_value(db, FREIGHT_RULES_SETTING_KEY, json.dumps(rules, ensure_ascii=False))
+        save_setting_value(db, DEFAULT_FREIGHT_ZONE_KEY, zone)
+        save_setting_value(db, DEFAULT_WAREHOUSE_FEE_KEY, str(warehouse_fee))
+        updated_count = recalculate_all_product_freight(db)
+    first_mile = rules.get("first_mile", []) if isinstance(rules.get("first_mile"), list) else []
+    last_mile = rules.get("last_mile", []) if isinstance(rules.get("last_mile"), list) else []
+    return {
+        "saved": True,
+        "updated_count": updated_count,
+        "default_zone": zone,
+        "warehouse_fee": warehouse_fee,
+        "first_mile_count": len(first_mile),
+        "last_mile_count": len(last_mile),
+        "first_mile": first_mile[:20],
+        "last_mile": last_mile[:50],
+    }
 
 
 @app.post("/api/products/{product_id}/image", response_model=Product)
@@ -3098,10 +5297,32 @@ def process_product_image(payload: ProcessImagePayload) -> ImageTask:
     if selected_image not in allowed_images:
         raise HTTPException(status_code=400, detail="请选择当前商品关联的图片进行图生图")
     if selected_image.startswith("/images/"):
-        source_path = IMAGE_DIR / selected_image.removeprefix("/images/")
-        if not source_path.exists():
+        source_path = local_image_path_from_url(selected_image)
+        if not source_path:
             raise HTTPException(status_code=404, detail="所选本地图片文件不存在")
-        raise HTTPException(status_code=400, detail="图生图 API 需要公网图片 URL；请选择采集图或处理字段里的站外图片链接。")
+        local_path = save_processed_image_from_local(payload.product_id, selected_image)
+        timestamp = now_text()
+        with connect() as db:
+            cursor = db.execute(
+                """
+                INSERT INTO image_tasks (product_id, provider, task_id, status, source_image, result_url, local_path, prompt, note, created_at, updated_at)
+                VALUES (?, 'local', ?, 'completed', ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    payload.product_id,
+                    f"local-{payload.product_id}-{int(time.time())}",
+                    selected_image,
+                    selected_image,
+                    local_path,
+                    "本地图片处理",
+                    "已复制本地图片作为处理图，未调用外部图生图 API",
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            db.execute("UPDATE products SET main_image = ?, status = ?, updated_at = ? WHERE id = ?", (local_path, "待处理", timestamp, payload.product_id))
+            row = db.execute("SELECT * FROM image_tasks WHERE id = ?", (cursor.lastrowid,)).fetchone()
+        return image_task_from_row(row)
     if not selected_image.startswith("http"):
         raise HTTPException(status_code=400, detail="所选图片不是公网 URL，不能提交图生图")
     image_api = get_image_api_config()
@@ -3188,7 +5409,7 @@ def delete_products_bulk(payload: CollectionBulkPayload) -> dict[str, int]:
 
 @app.post("/api/dev/cleanup-test-data")
 def cleanup_test_data() -> dict[str, int]:
-    patterns = ["%smoke test%", "%example.local%", "%测试%", "%????????%"]
+    patterns = ["%smoke test%", "%example.local%", "%??%", "%??%"]
     deleted_products = 0
     deleted_collection_items = 0
     deleted_collection_tasks = 0
@@ -3230,6 +5451,77 @@ def cleanup_test_data() -> dict[str, int]:
     }
 
 
+def remove_file_if_old(path: Path, cutoff_timestamp: float) -> bool:
+    if not path.is_file() or path.stat().st_mtime >= cutoff_timestamp:
+        return False
+    path.unlink(missing_ok=True)
+    return True
+
+
+@app.post("/api/local/cleanup")
+def cleanup_local_data(payload: CleanupPayload) -> dict[str, int]:
+    retention_days = max(int(payload.retention_days or 7), 1)
+    cutoff_timestamp = time.time() - retention_days * 86400
+    cutoff_text = datetime.fromtimestamp(cutoff_timestamp).strftime("%Y-%m-%d %H:%M:%S")
+    deleted_exports = 0
+    deleted_logs = 0
+    deleted_images = 0
+    deleted_upload_tasks = 0
+    deleted_publish_records = 0
+    if payload.clean_exports:
+        export_dir = DATA_DIR / "export"
+        if export_dir.exists():
+            for path in export_dir.glob("*.xlsx"):
+                if remove_file_if_old(path, cutoff_timestamp):
+                    deleted_exports += 1
+    if payload.clean_logs:
+        logs_dir = DATA_DIR / "logs"
+        if logs_dir.exists():
+            for pattern in ("*.log", "*.json"):
+                for path in logs_dir.glob(pattern):
+                    if remove_file_if_old(path, cutoff_timestamp):
+                        deleted_logs += 1
+    with connect() as db:
+        old_success_tasks = db.execute(
+            "SELECT id FROM upload_tasks WHERE status = 'rpa_success' AND updated_at < ?",
+            (cutoff_text,),
+        ).fetchall()
+        old_task_ids = [row["id"] for row in old_success_tasks]
+        if old_task_ids:
+            placeholders = ",".join("?" for _ in old_task_ids)
+            deleted_upload_tasks = db.execute(f"DELETE FROM upload_tasks WHERE id IN ({placeholders})", old_task_ids).rowcount
+        if payload.clean_success_images:
+            rows = db.execute(
+                """
+                SELECT DISTINCT p.id
+                FROM products p
+                JOIN publish_records pr ON pr.skc = p.skc
+                WHERE pr.result IN ('Success', '成功') AND pr.created_at < ?
+                """,
+                (cutoff_text,),
+            ).fetchall()
+            for row in rows:
+                product_dir = IMAGE_DIR / str(row["id"])
+                if not product_dir.exists():
+                    continue
+                for path in product_dir.iterdir():
+                    if path.is_file() and path.suffix.lower() in RPA_IMAGE_EXTENSIONS:
+                        path.unlink(missing_ok=True)
+                        deleted_images += 1
+        deleted_publish_records = db.execute(
+            "DELETE FROM publish_records WHERE result IN ('Success', '成功', 'Queued') AND created_at < ?",
+            (cutoff_text,),
+        ).rowcount
+    return {
+        "retention_days": retention_days,
+        "deleted_exports": deleted_exports,
+        "deleted_logs": deleted_logs,
+        "deleted_success_images": deleted_images,
+        "deleted_upload_tasks": deleted_upload_tasks,
+        "deleted_publish_records": deleted_publish_records,
+    }
+
+
 
 
 
@@ -3244,6 +5536,22 @@ def get_setting_value(key: str, default: str = "") -> str:
     return row["value"] if row else default
 
 
+def int_setting(key: str, default: int, min_value: int = 0, max_value: int = 999) -> int:
+    try:
+        value = int(float(get_setting_value(key, str(default))))
+    except (TypeError, ValueError):
+        return default
+    return max(min_value, min(max_value, value))
+
+
+def float_setting(key: str, default: float, min_value: float = 0.0, max_value: float = 60.0) -> float:
+    try:
+        value = float(get_setting_value(key, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return max(min_value, min(max_value, value))
+
+
 def write_run_log(task_id: int, content: str) -> str:
     log_dir = DATA_DIR / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -3255,6 +5563,8 @@ def write_run_log(task_id: int, content: str) -> str:
 def processing_item_issues(item: ProcessingItem) -> list[str]:
     issues: list[str] = []
     colors = item_colors(item)
+    unknown_colors = item_unknown_color_values(item)
+    unsupported_sizes = item_unsupported_upload_sizes(item)
     if item.image_status != "has_main_image":
         issues.append("缺少主图")
     if not item.english_title.strip():
@@ -3265,12 +5575,17 @@ def processing_item_issues(item: ProcessingItem) -> list[str]:
         issues.append("颜色为空")
     elif item.color.strip().lower() == "pending":
         issues.append("颜色待确认")
+    if unknown_colors:
+        issues.append(f"颜色无法匹配标准色：{'、'.join(unknown_colors[:6])}")
     if not item.size.strip():
         issues.append("尺码为空")
     elif item.size.strip().lower() == "pending":
         issues.append("尺码待确认")
-    elif not item_supported_upload_sizes(item):
-        issues.append("无 RPA 支持尺码")
+    else:
+        if unsupported_sizes:
+            issues.append(f"不支持尺码：{'、'.join(unsupported_sizes[:6])}")
+        if not item_supported_upload_sizes(item):
+            issues.append("无 RPA 支持尺码")
     if not item.sku_code.strip():
         issues.append("SKU Code 为空")
     elif "COLOR-SIZE" in item.sku_code.upper():
@@ -3337,17 +5652,157 @@ def upload_preflight_summary(items: list[ProcessingItem]) -> dict[str, object]:
     }
 
 
+def sync_processing_exceptions(items: list[ProcessingItem]) -> dict[str, object]:
+    summary = upload_preflight_summary(items)
+    diagnostics = upload_item_diagnostics(items)
+    timestamp = now_text()
+    active_ids: set[int] = set()
+    with connect() as db:
+        for item in diagnostics:
+            product_id = int(item["product_id"])
+            issues = list(item["issues"] or [])
+            warnings = list(item["warnings"] or [])
+            if not issues and not warnings:
+                continue
+            active_ids.add(product_id)
+            db.execute(
+                """
+                INSERT INTO processing_exceptions (product_id, skc, title, status, issues_json, warnings_json, note, created_at, updated_at)
+                VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?)
+                ON CONFLICT(product_id) DO UPDATE SET
+                    skc = excluded.skc,
+                    title = excluded.title,
+                    status = 'open',
+                    issues_json = excluded.issues_json,
+                    warnings_json = excluded.warnings_json,
+                    note = excluded.note,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    product_id,
+                    str(item["skc"] or ""),
+                    str(item["title"] or ""),
+                    json.dumps(issues, ensure_ascii=False),
+                    json.dumps(warnings, ensure_ascii=False),
+                    "；".join([*issues, *warnings])[:500],
+                    timestamp,
+                    timestamp,
+                ),
+            )
+        if active_ids:
+            placeholders = ",".join("?" for _ in active_ids)
+            db.execute(
+                f"UPDATE processing_exceptions SET status = 'resolved', updated_at = ? WHERE status = 'open' AND product_id NOT IN ({placeholders})",
+                [timestamp, *active_ids],
+            )
+        else:
+            db.execute("UPDATE processing_exceptions SET status = 'resolved', updated_at = ? WHERE status = 'open'", (timestamp,))
+    return summary
+
+
+def processing_exception_from_row(row: sqlite3.Row) -> ProcessingExceptionItem:
+    return ProcessingExceptionItem(
+        product_id=int(row["product_id"]),
+        skc=row["skc"] or "",
+        title=row["title"] or "",
+        status=row["status"] or "open",
+        issues=json.loads(row["issues_json"] or "[]"),
+        warnings=json.loads(row["warnings_json"] or "[]"),
+        updated_at=row["updated_at"] or "",
+    )
+
+
+def product_ids_for_failed_publish_records(db: sqlite3.Connection, ids: list[int] | None = None) -> list[int]:
+    params: list[object] = []
+    where = "WHERE pr.result IN ('Failed', '失败')"
+    if ids:
+        placeholders = ",".join("?" for _ in ids)
+        where += f" AND pr.id IN ({placeholders})"
+        params.extend(ids)
+    rows = db.execute(
+        f"""
+        SELECT DISTINCT p.id
+        FROM publish_records pr
+        JOIN products p ON p.skc = pr.skc
+        {where}
+        ORDER BY p.id DESC
+        """,
+        params,
+    ).fetchall()
+    return [int(row["id"]) for row in rows]
+
+
+def build_processing_items_for_ids(product_ids: list[int]) -> list[ProcessingItem]:
+    if not product_ids:
+        return []
+    wanted = set(int(product_id) for product_id in product_ids)
+    items_by_id = {item.product_id: item for item in build_processing_items() if item.product_id in wanted}
+    return [items_by_id[product_id] for product_id in product_ids if product_id in items_by_id]
+
+
+def normalize_upload_size(value: str) -> str:
+    text = str(value or "").strip().upper()
+    if not text:
+        return ""
+    text = re.sub(r"[【\[].*?[】\]]", "", text).strip()
+    aliases = size_alias_map()
+    compact_text = normalize_color_alias(text).upper()
+    if text in aliases:
+        return aliases[text]
+    if compact_text in aliases:
+        return aliases[compact_text]
+    match = re.search(r"(?<![A-Z0-9])(XS|S|M|L|XL|XXL|2XL|3XL|4XL|XXXL)(?![A-Z0-9])", text)
+    if not match:
+        match = re.search(r"(XS|S|M|L|XL|XXL|2XL|3XL|4XL|XXXL)", text)
+    if not match:
+        return text
+    return aliases.get(match.group(1), match.group(1))
+
+
 def item_sizes(item: ProcessingItem) -> list[str]:
-    values = [part.strip().upper() for part in re.split(r"[,，/、\s-]+", item.size or "") if part.strip()]
-    return values or [str(item.size or "").strip()]
+    sizes: list[str] = []
+    for part in re.split(r"[,，/、\n]+", item.size or ""):
+        size = normalize_upload_size(part)
+        if size and size not in sizes:
+            sizes.append(size)
+    return sizes or [normalize_upload_size(str(item.size or ""))]
+
+
+def sort_upload_sizes(sizes: list[str]) -> list[str]:
+    return sorted(sizes, key=lambda size: (STANDARD_UPLOAD_SIZE_RANK.get(size, len(STANDARD_UPLOAD_SIZES)), size))
 
 
 def item_supported_upload_sizes(item: ProcessingItem) -> list[str]:
-    return [size for size in item_sizes(item) if size in RPA_ALLOWED_UPLOAD_SIZES]
+    return sort_upload_sizes([size for size in item_sizes(item) if size in RPA_ALLOWED_UPLOAD_SIZES])
 
 
 def item_unsupported_upload_sizes(item: ProcessingItem) -> list[str]:
     return [size for size in item_sizes(item) if size and size not in RPA_ALLOWED_UPLOAD_SIZES]
+
+
+def item_raw_color_values(item: ProcessingItem) -> list[str]:
+    values: list[str] = []
+    for value in re.split(r"[,，/、\n]+", item.color or ""):
+        text = str(value or "").strip()
+        if text and text.lower() != "pending" and text not in values:
+            values.append(text)
+    for assignment in item.color_image_assignments:
+        text = str(assignment.color or "").strip()
+        if text and text.lower() != "pending" and text not in values:
+            values.append(text)
+    for option in item.image_options:
+        text = str(option.color or "").strip()
+        if text and text.lower() != "pending" and text not in values:
+            values.append(text)
+    return values
+
+
+def item_unknown_color_values(item: ProcessingItem) -> list[str]:
+    unknown: list[str] = []
+    for value in item_raw_color_values(item):
+        if not clean_color_label(value) and value not in unknown:
+            unknown.append(value)
+    return unknown
 
 
 def item_colors(item: ProcessingItem) -> list[str]:
@@ -3360,6 +5815,11 @@ def item_colors(item: ProcessingItem) -> list[str]:
         color = clean_color_label(assignment.color)
         if color and color not in colors:
             colors.append(color)
+    specific_colors = [color for color in colors if color != "混合色"]
+    if specific_colors:
+        return specific_colors
+    if colors:
+        return colors
     for option in item.image_options:
         color = clean_color_label(option.color)
         if color and color not in colors:
@@ -3380,7 +5840,9 @@ def color_upload_images(item: ProcessingItem, color: str) -> list[str]:
         urls.append(item.main_image)
     for option in item.image_options:
         option_color = clean_color_label(option.color)
-        if option.url and (option_color == clean_color or not option_color):
+        if option.kind in {"detail_desc_image", "detail_image", "source_url"}:
+            continue
+        if option.url and (option_color == clean_color or (not option_color and option.kind in {"main_image", "local_file", "collection_image"})):
             urls.append(option.url)
     unique_urls: list[str] = []
     seen: set[str] = set()
@@ -3397,6 +5859,86 @@ def item_upload_images(item: ProcessingItem) -> list[str]:
     if not colors:
         return []
     return color_upload_images(item, colors[0])
+
+
+def detail_upload_images(item: ProcessingItem) -> list[str]:
+    assigned = sorted(
+        [assignment for assignment in item.detail_image_assignments if assignment.image_url],
+        key=lambda assignment: assignment.sort_order,
+    )
+    unique_urls: list[str] = []
+    seen: set[str] = set()
+    for assignment in assigned:
+        identity = image_identity_server(assignment.image_url)
+        if identity and identity not in seen:
+            seen.add(identity)
+            unique_urls.append(assignment.image_url)
+    return unique_urls
+
+
+def miaoshou_image_url(value: str) -> str:
+    text = str(value or "").strip()
+    if text.startswith("http"):
+        return text
+    if text.startswith("/images/"):
+        port = os.environ.get("UPLOAD_ASSISTANT_PORT", "8000")
+        return f"http://127.0.0.1:{port}{text}"
+    return text
+
+
+def miaoshou_detail_description(item: ProcessingItem, detail_urls: list[str] | None = None) -> str:
+    urls = detail_urls if detail_urls is not None else [miaoshou_image_url(url) for url in detail_upload_images(item)]
+    urls = [url for url in urls if url]
+    if not urls:
+        return ""
+    return "".join(f'<p><img src="{escape(url, quote=True)}" /></p>' for url in urls)
+
+
+def cos_export_url_resolver(items: list[ProcessingItem]) -> Callable[[ProcessingItem, str, str | None, int], str]:
+    if not cos_public_image_base():
+        return lambda _item, _source_url, _color, _index: ""
+    item_ids = {item.product_id for item in items}
+    skc_by_product_id = {item.product_id: safe_path_segment(item.skc, f"product_{item.product_id}") for item in items}
+    detail_urls_by_product_id = {item.product_id: detail_upload_images(item) for item in items}
+    color_urls_by_key = {
+        (item.product_id, clean_color_label(color)): color_upload_images(item, color)
+        for item in items
+        for color in item_colors(item)
+    }
+    cos_urls: dict[tuple[int, str], str] = {}
+    root = configured_rpa_sku_image_dir()
+    if not root.exists():
+        return lambda _item, _source_url, _color, _index: ""
+    for product_dir in root.iterdir():
+        if not product_dir.is_dir():
+            continue
+        matching_ids = [product_id for product_id, safe_skc in skc_by_product_id.items() if safe_skc == product_dir.name]
+        for product_id in matching_ids:
+            if product_id not in item_ids:
+                continue
+            detail_dir = product_dir / "detail"
+            if detail_dir.exists():
+                for index, source_url in enumerate(detail_urls_by_product_id.get(product_id, []), start=1):
+                    target = detail_dir / f"{index}.jpg"
+                    if target.is_file():
+                        cos_urls[(product_id, image_identity_server(source_url))] = cos_public_image_url(product_dir.name, "detail", target.name)
+            for color_key, source_urls in [
+                (key_color, urls)
+                for (key_product_id, key_color), urls in color_urls_by_key.items()
+                if key_product_id == product_id
+            ]:
+                color_dir = product_dir / safe_path_segment(color_key, "Color")
+                if not color_dir.exists():
+                    continue
+                for index, source_url in enumerate(source_urls, start=1):
+                    target = color_dir / f"{index}.jpg"
+                    if target.is_file():
+                        cos_urls[(product_id, image_identity_server(source_url))] = cos_public_image_url(product_dir.name, color_dir.name, target.name)
+
+    def resolve(item: ProcessingItem, source_url: str, _color: str | None = None, _index: int = 0) -> str:
+        return cos_urls.get((item.product_id, image_identity_server(source_url)), "")
+
+    return resolve
 
 
 def item_color_image_counts(item: ProcessingItem) -> dict[str, int]:
@@ -3418,17 +5960,37 @@ def prepare_rpa_sku_images(items: list[ProcessingItem]) -> dict[str, object]:
     target_root = configured_rpa_sku_image_dir()
     target_root.mkdir(parents=True, exist_ok=True)
     prepared: list[dict[str, object]] = []
+    prepared_details: list[dict[str, object]] = []
     missing: list[dict[str, str]] = []
     for item in items:
+        safe_skc = safe_path_segment(item.skc, f"product_{item.product_id}")
+        product_root = target_root / safe_skc
+        detail_urls = detail_upload_images(item)
+        detail_dir = product_root / "detail"
+        if detail_dir.exists():
+            for old_file in detail_dir.iterdir():
+                if old_file.is_file() and old_file.suffix.lower() in RPA_IMAGE_EXTENSIONS:
+                    old_file.unlink(missing_ok=True)
+        detail_written = 0
+        for index, image_url in enumerate(detail_urls, start=1):
+            target = detail_dir / f"{index}.jpg"
+            if materialize_image_for_rpa(image_url, target):
+                detail_written += 1
+        if detail_written:
+            prepared_details.append({"skc": item.skc, "count": detail_written, "dir": str(detail_dir)})
         for color in item_colors(item):
             safe_color = safe_path_segment(color, "Color")
-            product_dir = target_root / safe_path_segment(item.skc, f"product_{item.product_id}") / safe_color
+            product_dir = product_root / safe_color
             if product_dir.exists():
                 for old_file in product_dir.iterdir():
                     if old_file.is_file() and old_file.suffix.lower() in RPA_IMAGE_EXTENSIONS:
                         old_file.unlink(missing_ok=True)
             urls = color_upload_images(item, color)
             written = 0
+            if detail_urls:
+                target = product_dir / "0.jpg"
+                if materialize_image_for_rpa(detail_urls[0], target):
+                    written += 1
             for index, image_url in enumerate(urls, start=1):
                 target = product_dir / f"{index}.jpg"
                 if materialize_image_for_rpa(image_url, target):
@@ -3436,11 +5998,20 @@ def prepare_rpa_sku_images(items: list[ProcessingItem]) -> dict[str, object]:
             if written >= 3:
                 prepared.append({"skc": item.skc, "color": color, "count": written, "dir": str(product_dir)})
             else:
-                missing.append({"skc": item.skc, "color": color, "reason": f"仅生成 {written} 张 RPA 本地图片"})
-    return {"root": str(target_root), "prepared_count": len(prepared), "missing_count": len(missing), "prepared": prepared, "missing": missing}
+                missing.append({"skc": item.skc, "color": color, "reason": f"??? {written} ? RPA ????"})
+    return {
+        "root": str(target_root),
+        "prepared_count": len(prepared),
+        "missing_count": len(missing),
+        "detail_prepared_count": len(prepared_details),
+        "prepared": prepared,
+        "prepared_details": prepared_details,
+        "missing": missing,
+    }
 
 
-def miaoshou_rows(items: list[ProcessingItem]) -> list[list[object]]:
+def miaoshou_rows(items: list[ProcessingItem], image_url_resolver: Callable[[ProcessingItem, str, str | None, int], str] | None = None) -> list[list[object]]:
+    resolve_image_url = image_url_resolver or (lambda item, source_url, _color, _index: miaoshou_image_url(source_url))
     rows: list[list[object]] = []
     for item in items:
         sizes = item_supported_upload_sizes(item)
@@ -3448,14 +6019,22 @@ def miaoshou_rows(items: list[ProcessingItem]) -> list[list[object]]:
             continue
         colors = item_colors(item)
         suggested_price = get_setting_value("miaoshou_default_suggested_price_usd", "60").strip() or "60"
+        detail_urls = [resolve_image_url(item, url, "detail", index) for index, url in enumerate(detail_upload_images(item)[:10], start=1)]
+        detail_urls = [url for url in detail_urls if url]
+        detail_description = miaoshou_detail_description(item, detail_urls)
+        first_row_for_item = True
         for color in colors:
-            material_image = next((url for url in color_upload_images(item, color) if str(url or "").startswith("http")), "")
+            color_urls = [resolve_image_url(item, url, color, index) for index, url in enumerate(color_upload_images(item, color)[:10], start=1)]
+            color_urls = [url for url in color_urls if url]
+            carousel_images = "\n".join(color_urls)
+            material_image = next((url for url in color_urls if str(url or "").startswith("http")), "")
             for size in sizes:
-                sku_code = f"{item.skc}-{safe_path_segment(color, 'COLOR')}-{safe_path_segment(size, 'SIZE')}"
+                color_code = color_english_label(color)
+                sku_code = f"{item.skc}-{color_code}-{safe_path_segment(size, 'SIZE')}"
                 rows.append([
                     item.title,
                     item.english_title,
-                    "",
+                    detail_description if first_row_for_item else "",
                     item.skc,
                     "颜色",
                     color,
@@ -3471,7 +6050,7 @@ def miaoshou_rows(items: list[ProcessingItem]) -> list[list[object]]:
                     "",
                     "",
                     item.source_url,
-                    "",
+                    carousel_images,
                     material_image,
                     "",
                     "",
@@ -3480,6 +6059,7 @@ def miaoshou_rows(items: list[ProcessingItem]) -> list[list[object]]:
                     str(item.stock),
                     str(item.ship_days),
                 ])
+                first_row_for_item = False
     return rows
 
 
@@ -3571,6 +6151,42 @@ def upload_task_from_row(row: sqlite3.Row) -> UploadTask:
     return UploadTask(**dict(row))
 
 
+def summarize_upload_failure(stdout_text: str, run_log: str = "") -> tuple[str, str, str]:
+    combined = "\n".join(part for part in [run_log, stdout_text] if part).strip()
+    if not combined:
+        return "executor", "执行器未返回失败详情", ""
+    stage_patterns = [
+        ("import", ["导入", "import"]),
+        ("ready-check", ["就绪", "搜索", "ready"]),
+        ("open-edit", ["编辑", "open-edit"]),
+        ("apply-template", ["模板", "template"]),
+        ("upload-color-images", ["上传", "图片", "file chooser", "image"]),
+        ("prune-empty-colors", ["剪枝", "无图", "prune"]),
+        ("fill-size-chart", ["尺码", "size"]),
+        ("select-warehouse", ["仓库", "warehouse"]),
+        ("fill-batch-inventory", ["库存", "inventory"]),
+        ("save", ["保存", "错误", "save"]),
+    ]
+    stage = "rpa"
+    lower_text = combined.lower()
+    for candidate, keywords in stage_patterns:
+        if any(keyword.lower() in lower_text for keyword in keywords):
+            stage = candidate
+            break
+    lines = [line.strip() for line in combined.splitlines() if line.strip()]
+    reason = ""
+    for line in reversed(lines):
+        if any(keyword in line for keyword in ["失败", "错误", "Exception", "Traceback", "Timeout", "ERROR", "fail", "Failed"]):
+            reason = line
+            break
+    if not reason and lines:
+        reason = lines[-1]
+    evidence_path = ""
+    for match in re.finditer(r"[A-Za-z]:[^\r\n<>|?*]+?\.(?:png|jpg|jpeg|html|log|txt)", combined, re.I):
+        evidence_path = match.group(0).strip().strip("'\")")
+    return stage, reason[:500], evidence_path
+
+
 def publish_record_from_row(row: sqlite3.Row) -> PublishRecord:
     return PublishRecord(**dict(row))
 
@@ -3596,7 +6212,40 @@ def build_processing_items() -> list[ProcessingItem]:
     for row in rows:
         title = row["title"]
         skc = row["skc"]
-        has_image = bool(row["main_image"])
+        main_image = str(row["main_image"] or "").strip()
+        image_options = build_product_image_options(row["id"], main_image, row["override_source_url"] or "")
+        color_assignments = list_color_image_assignments(row["id"])
+        resolved_override_color = clean_color_label(row["override_color"] or "")
+        fallback_color = normalize_assignment_color(row["override_color"] or "")
+        if resolved_override_color and color_assignments:
+            real_color_assignments = [assignment for assignment in color_assignments if clean_color_label(assignment.color) == resolved_override_color]
+            fallback_assignments = [assignment for assignment in color_assignments if clean_color_label(assignment.color) in {"", "混合色"}]
+            if not real_color_assignments and fallback_assignments:
+                first_assignment = fallback_assignments[0]
+                color_assignments = [
+                    ColorImageAssignment(
+                        color=resolved_override_color,
+                        image_url=first_assignment.image_url,
+                        preview_url=first_assignment.preview_url,
+                        source=first_assignment.source,
+                        sort_order=0,
+                        is_auto=first_assignment.is_auto,
+                        confidence=first_assignment.confidence,
+                    )
+                ]
+        if main_image and not color_assignments:
+            color_assignments = [
+                ColorImageAssignment(
+                    color=fallback_color,
+                    image_url=main_image,
+                    preview_url=image_preview_url(main_image),
+                    source="main_image",
+                    sort_order=0,
+                    is_auto=True,
+                    confidence=0.5,
+                )
+            ]
+        has_image = bool(main_image) or any(option.kind == "main_image" and option.url for option in image_options)
         default_declared_price = round(float(row["total_cost"]) + 239, 2)
         source_url = row["override_source_url"] or ""
         items.append(
@@ -3605,7 +6254,7 @@ def build_processing_items() -> list[ProcessingItem]:
                 title=title,
                 skc=skc,
                 english_title=row["override_english_title"] if valid_english_title(row["override_english_title"] or "") else english_title_fallback(title),
-                color=clean_color_label(row["override_color"] or ""),
+                color=clean_color_label(row["override_color"] or "") or (row["override_color"] or ""),
                 size=row["override_size"] or "pending",
                 sku_code=row["override_sku_code"] or f"{skc}-COLOR-SIZE",
                 declared_price=float(row["override_declared_price"] or default_declared_price),
@@ -3614,9 +6263,9 @@ def build_processing_items() -> list[ProcessingItem]:
                 width_cm=int(row["override_width_cm"] or 10),
                 height_cm=int(row["override_height_cm"] or 2),
                 source_url=source_url,
-                main_image=row["main_image"] or "",
-                image_options=build_product_image_options(row["id"], row["main_image"] or "", source_url),
-                color_image_assignments=list_color_image_assignments(row["id"]),
+                main_image=main_image,
+                image_options=image_options,
+                color_image_assignments=color_assignments,
                 detail_image_assignments=list_detail_image_assignments(row["id"]),
                 detail_status=row["detail_status"] or "",
                 detail_note=row["detail_note"] or "",
@@ -3651,10 +6300,10 @@ def ensure_unique_skc(db: sqlite3.Connection, desired_skc: str, product_id: int)
     if not clean_skc:
         return clean_skc
     candidate = clean_skc
-    suffix = 2
+    offset = 0
     while db.execute("SELECT 1 FROM products WHERE skc = ? AND id != ?", (candidate, product_id)).fetchone():
-        candidate = f"{clean_skc}-{suffix}"
-        suffix += 1
+        offset += 1
+        candidate = increment_skc_value(clean_skc, offset)
     return candidate
 
 
@@ -3702,7 +6351,243 @@ def save_processing_override(product_id: int, payload: ProcessingItemPayload) ->
                 timestamp,
             ),
         )
+        sync_product_weight_from_processing(db, product_id, payload.weight_g)
     return get_processing_item(product_id)
+
+
+
+def update_product_title(product_id: int, title: str) -> None:
+    clean_title = clean_generated_title(title, 180)
+    if not clean_title:
+        return
+    with connect() as db:
+        db.execute(
+            "UPDATE products SET title = ?, updated_at = ? WHERE id = ?",
+            (clean_title, now_text(), product_id),
+        )
+
+
+def extract_title_pair_from_model_response(response_text: str, fallback_chinese_title: str) -> tuple[str, str]:
+    text = str(response_text or "").strip().strip("` ")
+    if text.lower().startswith("json"):
+        text = text[4:].strip()
+    chinese_title = ""
+    english_title = ""
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            chinese_title = str(
+                parsed.get("chinese_title")
+                or parsed.get("title_zh")
+                or parsed.get("title_cn")
+                or parsed.get("cn_title")
+                or parsed.get("zh_title")
+                or parsed.get("title")
+                or ""
+            )
+            english_title = str(
+                parsed.get("english_title")
+                or parsed.get("title_en")
+                or parsed.get("en_title")
+                or ""
+            )
+    except Exception:
+        pass
+    if not chinese_title or not english_title:
+        lines = [clean_generated_title(line, 180) for line in re.split(r"[\r\n]+", text) if clean_generated_title(line, 180)]
+        for line in lines:
+            label_removed = re.sub(r"^(\u4e2d\u6587\u6807\u9898|\u4e2d\u6587|Chinese title|CN)[:\uff1a]\s*", "", line, flags=re.I).strip()
+            if label_removed != line or (contains_cjk(line) and not chinese_title):
+                chinese_title = label_removed
+                continue
+            label_removed = re.sub(r"^(\u82f1\u6587\u6807\u9898|\u82f1\u6587|English title|EN)[:\uff1a]\s*", "", line, flags=re.I).strip()
+            if label_removed != line or (not contains_cjk(line) and not english_title):
+                english_title = label_removed
+    chinese_title = clean_generated_title(chinese_title or fallback_chinese_title, 180)
+    english_title = clean_generated_title(english_title, 120)
+    if not valid_english_title(english_title):
+        english_title = english_title_fallback(chinese_title)
+    return chinese_title, english_title
+
+def chinese_title_fallback(item: ProcessingItem) -> str:
+    text = clean_generated_title(item.title, 180)
+    remove_words = [
+        "厂家直批", "厂家", "直批", "批发", "现货", "包邮", "网红", "爆款",
+        "2024年", "2025年", "2026年", "2024", "2025", "2026",
+        "新款", "热卖", "ins", "INS",
+    ]
+    for word in remove_words:
+        text = text.replace(word, "")
+    color = item_colors(item)[0] if item_colors(item) else clean_color_label(item.color)
+    parts: list[str] = []
+    if color:
+        parts.append(color)
+    if "高腰" in text:
+        parts.append("高腰")
+    if "宽松" in text:
+        parts.append("宽松")
+    if "紧身" in text or "包臀" in text:
+        parts.append("修身")
+    if "卷边" in text:
+        parts.append("卷边")
+    if "破洞" in text:
+        parts.append("破洞")
+    if "五分" in text or "5分" in text:
+        parts.append("五分")
+    if "牛仔" in text:
+        parts.append("牛仔")
+    if "短裤" in text or "热裤" in text:
+        parts.append("短裤")
+    if "女" in text:
+        parts.append("女")
+    if "夏" in text:
+        parts.append("夏季")
+    result = "".join(dict.fromkeys(part for part in parts if part))
+    if len(result) < 8:
+        result = text[:40]
+    if result == clean_generated_title(item.title, 180):
+        result = f"{result[:32]} 上架款"
+    return clean_generated_title(result, 80)
+
+
+def fallback_title_pair_for_processing_item(item: ProcessingItem, cache_key: str, reason: str = "") -> tuple[str, str]:
+    chinese_title = chinese_title_fallback(item)
+    english_title = english_title_fallback(chinese_title)
+    save_title_cache(cache_key, item.title, chinese_title, english_title, "fallback", reason[:80])
+    return chinese_title, english_title
+
+
+def generate_title_pair_for_processing_item(item: ProcessingItem) -> tuple[str, str]:
+    title_template = active_title_prompt_template()
+    cache_key = title_cache_key(item, title_template)
+    with connect() as db:
+        cached = db.execute("SELECT chinese_title, english_title FROM ai_title_cache WHERE cache_key = ?", (cache_key,)).fetchone()
+    if cached and cached["chinese_title"] and valid_english_title(cached["english_title"]):
+        return cached["chinese_title"], cached["english_title"]
+    with connect() as db:
+        deepseek = db.execute("SELECT * FROM api_configs WHERE key = 'deepseek'").fetchone()
+    if not deepseek or not deepseek["enabled"] or not deepseek["api_key"]:
+        return fallback_title_pair_for_processing_item(item, cache_key, "missing_api_config")
+    system_prompt = "You are a clothing ecommerce title assistant. Return strict JSON only, no markdown, no explanation."
+    if title_template:
+        user_prompt = render_title_prompt(title_template, item)
+    else:
+        user_prompt = (
+            "\u8bf7\u57fa\u4e8e\u539f\u59cb\u5546\u54c1\u6807\u9898\u751f\u6210\u4e00\u4e2a\u9002\u5408\u4e0a\u67b6\u7684\u4e2d\u6587\u5546\u54c1\u6807\u9898\uff0c\u7136\u540e\u628a\u8fd9\u4e2a\u4e2d\u6587\u6807\u9898\u9010\u6761\u7b49\u4e49\u7ffb\u8bd1\u6210\u82f1\u6587\u3002\n"
+            "\u91cd\u70b9\u662f\u4e2d\u6587\u6807\u9898\u8d28\u91cf\uff1b\u82f1\u6587\u5fc5\u987b\u548c\u4e2d\u6587\u6807\u9898 1:1 \u5bf9\u5e94\uff0c\u4e0d\u8981\u989d\u5916\u6269\u5199\u3002\n"
+            "\u8981\u6c42\uff1a\u4e2d\u6587\u6807\u9898\u81ea\u7136\u3001\u6e05\u695a\u3001\u4e0d\u8981\u54c1\u724c\u8bcd\u3001\u4e0d\u8981\u5938\u5927\u529f\u6548\uff1b\u82f1\u6587\u53ea\u5141\u8bb8\u82f1\u6587\uff0c120\u5b57\u7b26\u4ee5\u5185\u3002\n"
+            "\u8fd4\u56de JSON\uff1a{\"chinese_title\":\"...\",\"english_title\":\"...\"}\n\n"
+            f"\u539f\u59cb\u6807\u9898\uff1a{item.title}\n"
+            f"SKC\uff1a{item.skc}\n"
+            f"\u989c\u8272\uff1a{item.color}\n"
+            f"\u5c3a\u7801\uff1a{item.size}\n"
+        )
+    try:
+        response_text = call_openai_compatible_chat(
+            deepseek["base_url"] or "https://api.deepseek.com",
+            deepseek["api_key"],
+            deepseek["model"] or "deepseek-chat",
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            timeout=15,
+        )
+        chinese_title, english_title = extract_title_pair_from_model_response(response_text, item.title)
+        validate_title_pair(chinese_title, english_title)
+        save_title_cache(cache_key, item.title, chinese_title, english_title, "deepseek", deepseek["model"] or "deepseek-chat")
+        return chinese_title, english_title
+    except Exception as exc:
+        return fallback_title_pair_for_processing_item(item, cache_key, f"ai_error:{exc}")
+
+
+def title_cache_key(item: ProcessingItem, title_template: str = "") -> str:
+    raw = "|".join([item.title or "", item.skc or "", item.color or "", item.size or "", title_template or active_title_prompt_template()])
+    return hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def save_title_cache(cache_key: str, source_title: str, chinese_title: str, english_title: str, provider: str, model: str) -> None:
+    timestamp = now_text()
+    with connect() as db:
+        db.execute(
+            """
+            INSERT INTO ai_title_cache (cache_key, source_title, chinese_title, english_title, provider, model, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(cache_key) DO UPDATE SET
+                chinese_title = excluded.chinese_title,
+                english_title = excluded.english_title,
+                provider = excluded.provider,
+                model = excluded.model,
+                updated_at = excluded.updated_at
+            """,
+            (cache_key, source_title, chinese_title, english_title, provider, model, timestamp, timestamp),
+        )
+
+
+def title_cache_exists(item: ProcessingItem) -> bool:
+    with connect() as db:
+        row = db.execute("SELECT 1 FROM ai_title_cache WHERE cache_key = ?", (title_cache_key(item),)).fetchone()
+    return bool(row)
+
+
+def validate_title_pair(chinese_title: str, english_title: str) -> None:
+    if not clean_generated_title(chinese_title, 180):
+        raise ValueError("中文标题为空")
+    if not valid_english_title(english_title):
+        raise ValueError("英文标题校验失败")
+
+def generate_title_for_processing_item(product_id: int) -> ProcessingItem:
+    item = get_processing_item(product_id)
+    with connect() as db:
+        deepseek = db.execute("SELECT * FROM api_configs WHERE key = 'deepseek'").fetchone()
+    if deepseek and deepseek["enabled"] and deepseek["api_key"]:
+        title_template = active_prompt_template("标题提示词", "标题生成") or active_prompt_template("标题提示词")
+        if title_template:
+            system_prompt = "You are a product title copywriting assistant. Follow the user's prompt exactly. Return only the requested result."
+            user_prompt = render_title_prompt(title_template, item)
+        else:
+            system_prompt = "You are a Temu ecommerce listing assistant. Generate one concise, natural English product title. Return only the title, no quotes, no explanation."
+            user_prompt = (
+                f"Source title: {item.title}\n"
+                f"SKC: {item.skc}\n"
+                f"Color: {item.color}\n"
+                f"Size: {item.size}\n"
+                "Requirements: English only, under 120 characters, no brand names unless present, no exaggerated claims."
+            )
+        generated_title = call_openai_compatible_chat(
+            deepseek["base_url"] or "https://api.deepseek.com",
+            deepseek["api_key"],
+            deepseek["model"] or "deepseek-chat",
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            timeout=15,
+        )
+        generated_title = extract_title_from_model_response(generated_title, item.title)
+        if not valid_english_title(generated_title):
+            generated_title = english_title_fallback(item.title)
+    else:
+        generated_title = english_title_fallback(item.title)
+    updated = save_processing_override(
+        product_id,
+        ProcessingItemPayload(
+            english_title=generated_title,
+            color=item.color,
+            size=item.size,
+            sku_code=item.sku_code,
+            declared_price=item.declared_price,
+            weight_g=item.weight_g,
+            length_cm=item.length_cm,
+            width_cm=item.width_cm,
+            height_cm=item.height_cm,
+            source_url=item.source_url,
+            stock=item.stock,
+            ship_days=item.ship_days,
+        ),
+    )
+    updated.english_title = f"{updated.english_title}"
+    return updated
 
 
 
@@ -3719,6 +6604,10 @@ def setting_from_row(row: sqlite3.Row) -> AppSetting:
 
 def prompt_from_row(row: sqlite3.Row) -> PromptTemplate:
     return PromptTemplate(**dict(row))
+
+
+def is_default_prompt_template_row(row: sqlite3.Row) -> bool:
+    return (row["name"], row["category"], row["prompt_type"], row["usage"]) in DEFAULT_PROMPT_TEMPLATE_KEYS
 
 
 @app.get("/api/config/apis", response_model=list[ApiConfig])
@@ -3808,38 +6697,73 @@ def update_prompt(prompt_id: int, payload: PromptTemplatePayload) -> PromptTempl
 @app.delete("/api/prompts/{prompt_id}")
 def delete_prompt(prompt_id: int) -> dict[str, bool]:
     with connect() as db:
+        row = db.execute("SELECT * FROM prompt_templates WHERE id = ?", (prompt_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="prompt not found")
+        if is_default_prompt_template_row(row):
+            raise HTTPException(status_code=400, detail="默认提示词不允许删除")
         result = db.execute("DELETE FROM prompt_templates WHERE id = ?", (prompt_id,))
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="prompt not found")
     return {"ok": True}
 
 
-@app.post("/api/export/miaoshou")
-def export_miaoshou() -> dict[str, str]:
+REQUIRED_TEMU_UPLOAD_SETTINGS = [
+    ("temu_shop_account", "店铺账号"),
+    ("temu_site", "经营站点"),
+    ("temu_product_template", "产品模板"),
+    ("temu_size_category", "尺码分类"),
+    ("temu_size_template", "尺码模板"),
+    ("temu_warehouse_template", "仓库模板"),
+    ("temu_logistics_template", "物流模板"),
+]
+
+
+def validate_required_temu_upload_settings() -> None:
+    missing = [label for key, label in REQUIRED_TEMU_UPLOAD_SETTINGS if not get_setting_value(key, "").strip()]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"请先填写店铺与模板必填项：{'、'.join(missing)}")
+
+
+def export_miaoshou_for_items(items: list[ProcessingItem], prefix: str = "miaoshou_upload") -> dict[str, str]:
     export_dir = DATA_DIR / "export"
     export_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"miaoshou_upload_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    filename = f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     target = export_dir / filename
-    items = build_processing_items()
+    image_result = prepare_rpa_sku_images(items)
+    cos_sync_result = {"uploaded_count": 0, "failed_count": 0}
+    if upload_image_source() == "cos":
+        cos_sync_result = sync_rpa_images_to_cos(items)
+    image_url_resolver = cos_export_url_resolver(items) if upload_image_source() == "cos" else None
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Miaoshou Upload"
     sheet.append(MIAOSHOU_COLUMNS)
-    for row in miaoshou_rows(items):
+    for row in miaoshou_rows(items, image_url_resolver=image_url_resolver):
         sheet.append(row)
     for column_cells in sheet.columns:
         max_length = max(len(str(cell.value or "")) for cell in column_cells)
         sheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 10), 36)
     workbook.save(target)
-    image_result = prepare_rpa_sku_images(items)
-    return {"path": str(target), "filename": filename, "download_url": f"/api/export/miaoshou/{filename}", "rpa_image_dir": str(image_result["root"])}
+    return {
+        "path": str(target),
+        "filename": filename,
+        "download_url": f"/api/export/miaoshou/{filename}",
+        "rpa_image_dir": str(image_result["root"]),
+        "cos_uploaded_count": str(cos_sync_result["uploaded_count"]),
+    }
+
+
+@app.post("/api/export/miaoshou")
+def export_miaoshou() -> dict[str, str]:
+    return export_miaoshou_for_items(build_processing_items())
 
 
 @app.get("/api/export/miaoshou/{filename}")
 def download_miaoshou_export(filename: str) -> FileResponse:
     export_dir = (DATA_DIR / "export").resolve()
     target = (export_dir / filename).resolve()
-    if target.parent != export_dir or not target.name.startswith("miaoshou_upload_") or target.suffix != ".xlsx":
+    if target.parent != export_dir or not target.name.startswith(("miaoshou_upload_", "miaoshou_retry_")) or target.suffix != ".xlsx":
         raise HTTPException(status_code=400, detail="Invalid export filename")
     if not target.exists():
         raise HTTPException(status_code=404, detail="Export file not found")
@@ -3907,6 +6831,7 @@ def clear_upload_tasks() -> dict[str, int]:
 
 @app.post("/api/upload-tasks", response_model=UploadTask)
 def create_upload_task() -> UploadTask:
+    validate_required_temu_upload_settings()
     export = export_miaoshou()
     items = build_processing_items()
     item_summary = upload_preflight_summary(items)
@@ -3947,6 +6872,7 @@ def create_upload_task() -> UploadTask:
 
 @app.post("/api/upload-tasks/run", response_model=UploadTask)
 def run_upload_task() -> UploadTask:
+    validate_required_temu_upload_settings()
     mode = "real"
     preflight = upload_preflight()
     export = export_miaoshou()
@@ -3990,6 +6916,48 @@ def run_upload_task() -> UploadTask:
                     "INSERT INTO publish_records (result, skc, title, reason, created_at) VALUES (?, ?, ?, ?, ?)",
                     ("Queued", item.skc, item.title, "Waiting for Windows executor", timestamp),
                 )
+        row = db.execute("SELECT * FROM upload_tasks WHERE id = ?", (task_id,)).fetchone()
+    return upload_task_from_row(row)
+
+
+@app.post("/api/upload-tasks/retry-failed", response_model=UploadTask)
+def retry_failed_upload_task(payload: RetryFailedUploadPayload = Body(default_factory=RetryFailedUploadPayload)) -> UploadTask:
+    with connect() as db:
+        product_ids = product_ids_for_failed_publish_records(db, payload.ids)
+    if not product_ids:
+        raise HTTPException(status_code=400, detail="没有可重试的失败商品")
+    items = build_processing_items_for_ids(product_ids)
+    if not items:
+        raise HTTPException(status_code=400, detail="失败商品已不存在，无法重试")
+    timestamp = now_text()
+    export = export_miaoshou_for_items(items, prefix="miaoshou_retry")
+    preflight_summary = upload_preflight_summary(items)
+    blocked_items = preflight_summary["blocked_items"]
+    status = "needs_review" if blocked_items else "queued_for_executor"
+    run_log = "Retry upload queued for Windows executor." if not blocked_items else "Retry upload blocked: failed products still need review."
+    failed_count = len(blocked_items)
+    success_count = len(items) - failed_count
+    with connect() as db:
+        previous = db.execute("SELECT MAX(retry_count) AS retry_count FROM upload_tasks").fetchone()
+        retry_count = int(previous["retry_count"] or 0) + 1 if previous else 1
+        cursor = db.execute(
+            """
+            INSERT INTO upload_tasks (name, status, total_count, success_count, failed_count, export_path, run_log, retry_count, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (f"失败重试 {timestamp}", status, len(items), success_count, failed_count, export["path"], run_log, retry_count, timestamp, timestamp),
+        )
+        task_id = cursor.lastrowid
+        log_path = write_run_log(task_id, run_log)
+        manifest_path = write_task_manifest(task_id, "retry_failed", status, export["path"], items, run_log)
+        db.execute("UPDATE upload_tasks SET run_log = ? WHERE id = ?", (run_log + f" Log: {log_path} Manifest: {manifest_path}", task_id))
+        db.execute("DELETE FROM publish_records")
+        for item in items:
+            issues = processing_item_issues(item)
+            db.execute(
+                "INSERT INTO publish_records (result, skc, title, reason, created_at) VALUES (?, ?, ?, ?, ?)",
+                ("Failed" if issues else "Queued", item.skc, item.title, "; ".join(issues) if issues else "Retry queued for Windows executor", timestamp),
+            )
         row = db.execute("SELECT * FROM upload_tasks WHERE id = ?", (task_id,)).fetchone()
     return upload_task_from_row(row)
 
@@ -4060,6 +7028,7 @@ def _executor_task_payload(row: sqlite3.Row) -> dict[str, object]:
         "task": upload_task_from_row(row).model_dump(),
         "manifest": manifest,
         "export_download_url": f"/api/executor/tasks/{row['id']}/export" if filename else "",
+        "export_filename": filename,
         "manifest_download_url": f"/api/upload-tasks/{row['id']}/manifest",
         "settings": upload_operation_settings_snapshot(),
     }
@@ -4090,6 +7059,39 @@ def executor_claim_task(payload: ExecutorClaimPayload) -> dict[str, object]:
         )
         row = db.execute("SELECT * FROM upload_tasks WHERE id = ?", (row["id"],)).fetchone()
     return _executor_task_payload(row)
+
+
+@app.get("/api/executor/status", response_model=ExecutorStatus)
+def executor_status() -> ExecutorStatus:
+    work_dir = Path(get_setting_value("executor_work_dir", str(DATA_DIR / "executor")))
+    status_path = work_dir / "status.json"
+    pending_dir = work_dir / "pending_results"
+    pending_count = len(list(pending_dir.glob("task_*.json"))) if pending_dir.exists() else 0
+    payload: dict[str, object] = {}
+    if status_path.exists():
+        try:
+            payload = json.loads(status_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = {"status": "invalid_status_file", "message": "执行器状态文件无法读取"}
+    updated_at = str(payload.get("updated_at") or "")
+    online = False
+    if updated_at:
+        try:
+            heartbeat_time = datetime.strptime(updated_at, "%Y-%m-%d %H:%M:%S")
+            timeout_seconds = int_setting("executor_heartbeat_timeout", 60, 10, 3600)
+            online = (datetime.now() - heartbeat_time).total_seconds() <= timeout_seconds
+        except ValueError:
+            online = False
+    return ExecutorStatus(
+        online=online,
+        executor_id=str(payload.get("executor_id") or ""),
+        status=str(payload.get("status") or ("online" if online else "offline")),
+        message=str(payload.get("message") or ""),
+        task_id=int(payload.get("task_id") or 0),
+        updated_at=updated_at,
+        pending_result_count=pending_count,
+        status_path=str(status_path),
+    )
 
 
 @app.post("/api/executor/tasks/{task_id}/heartbeat")
@@ -4126,6 +7128,18 @@ def executor_report_task(task_id: int, payload: ExecutorReportPayload) -> Upload
     log_text = payload.run_log.strip()
     if payload.stdout.strip():
         log_text = (log_text + "\n\n" if log_text else "") + payload.stdout.strip()
+    failure_stage = payload.failure_stage.strip()
+    failure_reason = payload.failure_reason.strip()
+    evidence_path = payload.evidence_path.strip()
+    if status != "rpa_success" and (not failure_stage or not failure_reason):
+        inferred_stage, inferred_reason, inferred_evidence = summarize_upload_failure(payload.stdout, payload.run_log)
+        failure_stage = failure_stage or inferred_stage
+        failure_reason = failure_reason or inferred_reason
+        evidence_path = evidence_path or inferred_evidence
+    if status == "rpa_success":
+        failure_stage = ""
+        failure_reason = ""
+        evidence_path = ""
     with connect() as db:
         row = db.execute("SELECT * FROM upload_tasks WHERE id = ?", (task_id,)).fetchone()
         if not row:
@@ -4140,10 +7154,11 @@ def executor_report_task(task_id: int, payload: ExecutorReportPayload) -> Upload
         db.execute(
             """
             UPDATE upload_tasks
-            SET status = ?, success_count = ?, failed_count = ?, run_log = ?, heartbeat_at = ?, updated_at = ?
+            SET status = ?, success_count = ?, failed_count = ?, run_log = ?, failure_stage = ?,
+                failure_reason = ?, evidence_path = ?, heartbeat_at = ?, updated_at = ?
             WHERE id = ?
             """,
-            (status, payload.success_count, payload.failed_count, run_log, timestamp, timestamp, task_id),
+            (status, payload.success_count, payload.failed_count, run_log, failure_stage, failure_reason, evidence_path, timestamp, timestamp, task_id),
         )
         db.execute("DELETE FROM publish_records")
         manifest_path = DATA_DIR / "logs" / f"upload_task_{task_id}.json"
@@ -4152,11 +7167,14 @@ def executor_report_task(task_id: int, payload: ExecutorReportPayload) -> Upload
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         for item in manifest.get("items", []) if isinstance(manifest.get("items"), list) else []:
             result = "Success" if status == "rpa_success" else "Failed"
-            reason = "Executor reported success" if status == "rpa_success" else run_log
+            reason = "Executor reported success" if status == "rpa_success" else (failure_reason or run_log)
+            skc = str(item.get("skc", ""))
             db.execute(
                 "INSERT INTO publish_records (result, skc, title, reason, created_at) VALUES (?, ?, ?, ?, ?)",
-                (result, str(item.get("skc", "")), str(item.get("title", "")), reason, timestamp),
+                (result, skc, str(item.get("title", "")), reason, timestamp),
             )
+            if status == "rpa_success" and skc:
+                db.execute("UPDATE products SET status = ?, updated_at = ? WHERE skc = ?", ("已上货", timestamp, skc))
         row = db.execute("SELECT * FROM upload_tasks WHERE id = ?", (task_id,)).fetchone()
     return upload_task_from_row(row)
 
@@ -4190,6 +7208,35 @@ def list_processing_items() -> list[ProcessingItem]:
     return build_processing_items()
 
 
+@app.get("/api/processing-items/by-id/{product_id}", response_model=ProcessingItem)
+def read_processing_item(product_id: int) -> ProcessingItem:
+    return get_processing_item(product_id)
+
+
+@app.post("/api/processing-items/preflight")
+def run_processing_preflight() -> dict[str, object]:
+    items = build_processing_items()
+    summary = sync_processing_exceptions(items)
+    summary["exception_pool_synced"] = True
+    return summary
+
+
+@app.get("/api/processing-items/exceptions", response_model=list[ProcessingExceptionItem])
+def list_processing_exceptions(status: str = "open") -> list[ProcessingExceptionItem]:
+    clauses: list[str] = []
+    params: list[object] = []
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with connect() as db:
+        rows = db.execute(
+            f"SELECT * FROM processing_exceptions {where_sql} ORDER BY updated_at DESC, product_id DESC",
+            params,
+        ).fetchall()
+    return [processing_exception_from_row(row) for row in rows]
+
+
 @app.put("/api/processing-items/bulk", response_model=list[ProcessingItem])
 def update_processing_items_bulk(payload: ProcessingBulkPayload) -> list[ProcessingItem]:
     if not payload.ids:
@@ -4203,7 +7250,130 @@ def update_processing_items_bulk(payload: ProcessingBulkPayload) -> list[Process
                 desired_skc = increment_skc_value(start_skc, index)
                 skc = ensure_unique_skc(db, desired_skc, product_id)
                 db.execute("UPDATE products SET skc = ?, updated_at = ? WHERE id = ?", (skc, timestamp, product_id))
-    return [save_processing_override(product_id, payload.fields) for product_id in ordered_ids]
+    updated_items: list[ProcessingItem] = []
+    for product_id in ordered_ids:
+        current = get_processing_item(product_id)
+        merged_fields = ProcessingItemPayload(
+            english_title=current.english_title,
+            color=current.color,
+            size=current.size,
+            sku_code=current.sku_code,
+            declared_price=payload.fields.declared_price,
+            weight_g=payload.fields.weight_g,
+            length_cm=payload.fields.length_cm,
+            width_cm=payload.fields.width_cm,
+            height_cm=payload.fields.height_cm,
+            source_url=current.source_url,
+            stock=payload.fields.stock,
+            ship_days=payload.fields.ship_days,
+        )
+        updated_items.append(save_processing_override(product_id, merged_fields))
+    return updated_items
+
+
+@app.post("/api/processing-items/field-tasks", response_model=ProcessingFieldTask)
+def create_processing_field_task(payload: ProcessingBulkPayload) -> ProcessingFieldTask:
+    ordered_ids = []
+    seen_ids: set[int] = set()
+    for product_id in payload.ids:
+        product_id = int(product_id)
+        if product_id > 0 and product_id not in seen_ids:
+            ordered_ids.append(product_id)
+            seen_ids.add(product_id)
+    if not ordered_ids:
+        raise HTTPException(status_code=400, detail="请选择要批量编辑的商品")
+    timestamp = now_text()
+    with connect() as db:
+        cursor = db.execute(
+            """
+            INSERT INTO processing_field_tasks (
+                status, ids_json, fields_json, start_skc, total_count, processed_count, success_count, failed_count, note, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "queued",
+                json.dumps(ordered_ids),
+                json.dumps(payload.fields.model_dump(), ensure_ascii=False),
+                payload.start_skc.strip(),
+                len(ordered_ids),
+                0,
+                0,
+                0,
+                "已加入批量字段处理队列",
+                timestamp,
+                timestamp,
+            ),
+        )
+        task_id = cursor.lastrowid
+        row = db.execute("SELECT * FROM processing_field_tasks WHERE id = ?", (task_id,)).fetchone()
+    schedule_processing_field_task_execution()
+    return processing_field_task_from_row(row)
+
+
+@app.get("/api/processing-items/field-tasks/{task_id}", response_model=ProcessingFieldTask)
+def get_processing_field_task(task_id: int) -> ProcessingFieldTask:
+    with connect() as db:
+        row = db.execute("SELECT * FROM processing_field_tasks WHERE id = ?", (task_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="批量字段处理任务不存在")
+    return processing_field_task_from_row(row)
+
+
+def processing_task_history_from_row(row: sqlite3.Row, task_type: str) -> ProcessingTaskHistoryItem:
+    failed_ids = json.loads(row["failed_ids_json"] or "[]") if "failed_ids_json" in row.keys() else []
+    return ProcessingTaskHistoryItem(
+        id=int(row["id"]),
+        task_type=task_type,
+        task_label="批量标题" if task_type == "title" else "批量字段",
+        status=row["status"] or "",
+        total_count=int(row["total_count"] or 0),
+        processed_count=int(row["processed_count"] or 0),
+        success_count=int(row["success_count"] or 0),
+        failed_count=int(row["failed_count"] or 0),
+        cache_hit_count=int(row["cache_hit_count"] or 0) if "cache_hit_count" in row.keys() else 0,
+        retryable_count=len(failed_ids),
+        note=row["note"] or "",
+        created_at=row["created_at"] or "",
+        updated_at=row["updated_at"] or "",
+    )
+
+
+@app.get("/api/processing-items/tasks", response_model=ProcessingTaskHistoryPage)
+def list_processing_tasks(task_type: str = "", status: str = "", page: int = 1, page_size: int = 20, summary: bool = False) -> ProcessingTaskHistoryPage:
+    safe_page = max(1, int(page or 1))
+    safe_page_size = max(1, min(int(page_size or 20), 100))
+    types = [task_type.strip().lower()] if task_type.strip().lower() in {"title", "field"} else ["title", "field"]
+    status_filter = status.strip().lower()
+    with connect() as db:
+        tasks: list[ProcessingTaskHistoryItem] = []
+        if "title" in types:
+            title_rows = db.execute("SELECT * FROM processing_title_tasks ORDER BY id DESC LIMIT 500").fetchall()
+            tasks.extend(processing_task_history_from_row(row, "title") for row in title_rows)
+        if "field" in types:
+            field_rows = db.execute("SELECT * FROM processing_field_tasks ORDER BY id DESC LIMIT 500").fetchall()
+            tasks.extend(processing_task_history_from_row(row, "field") for row in field_rows)
+    if status_filter:
+        if status_filter == "retryable":
+            tasks = [task for task in tasks if task.retryable_count > 0]
+        else:
+            tasks = [task for task in tasks if task.status == status_filter]
+    tasks = sorted(tasks, key=lambda task: (task.updated_at, task.id), reverse=True)
+    if summary:
+        priority_tasks = [task for task in tasks if task.status in {"queued", "running"} or task.retryable_count > 0]
+        recent_tasks = [task for task in tasks if task not in priority_tasks]
+        tasks = [*priority_tasks, *recent_tasks][:5]
+        return ProcessingTaskHistoryPage(items=tasks, total=len(tasks), page=1, page_size=5, total_pages=1)
+    total = len(tasks)
+    total_pages = max(1, (total + safe_page_size - 1) // safe_page_size)
+    safe_page = min(safe_page, total_pages)
+    start = (safe_page - 1) * safe_page_size
+    return ProcessingTaskHistoryPage(
+        items=tasks[start:start + safe_page_size],
+        total=total,
+        page=safe_page,
+        page_size=safe_page_size,
+        total_pages=total_pages,
+    )
 
 
 @app.post("/api/processing-items/auto-assign-color-images", response_model=AutoAssignColorImagesResult)
@@ -4233,56 +7403,135 @@ def clear_processing_detail_image(product_id: int, slot_index: int) -> list[Deta
 
 @app.post("/api/processing-items/generate-title", response_model=ProcessingItem)
 def generate_processing_title(payload: GenerateTitlePayload) -> ProcessingItem:
-    item = get_processing_item(payload.product_id)
-    with connect() as db:
-        deepseek = db.execute("SELECT * FROM api_configs WHERE key = 'deepseek'").fetchone()
-    if deepseek and deepseek["enabled"] and deepseek["api_key"]:
-        title_template = active_prompt_template("标题提示词", "标题生成") or active_prompt_template("标题提示词")
-        if title_template:
-            system_prompt = "You are a product title copywriting assistant. Follow the user's prompt exactly. Return only the requested result."
-            user_prompt = render_title_prompt(title_template, item)
-        else:
-            system_prompt = "You are a Temu ecommerce listing assistant. Generate one concise, natural English product title. Return only the title, no quotes, no explanation."
-            user_prompt = (
-                f"Source title: {item.title}\n"
-                f"SKC: {item.skc}\n"
-                f"Color: {item.color}\n"
-                f"Size: {item.size}\n"
-                "Requirements: English only, under 120 characters, no brand names unless present, no exaggerated claims."
+    return generate_title_for_processing_item(payload.product_id)
+
+
+@app.post("/api/processing-items/generate-titles", response_model=BulkGenerateTitleResult)
+def generate_processing_titles(payload: BulkGenerateTitlePayload) -> BulkGenerateTitleResult:
+    seen_ids: set[int] = set()
+    ordered_ids: list[int] = []
+    for product_id in payload.ids:
+        if product_id > 0 and product_id not in seen_ids:
+            ordered_ids.append(product_id)
+            seen_ids.add(product_id)
+    if not ordered_ids:
+        raise HTTPException(status_code=400, detail="请选择要批量生成标题的商品")
+
+    results: list[BulkGenerateTitleItemResult] = []
+    for product_id in ordered_ids:
+        try:
+            item = get_processing_item(product_id)
+            chinese_title, english_title = generate_title_pair_for_processing_item(item)
+            update_product_title(product_id, chinese_title)
+            updated = save_processing_override(
+                product_id,
+                ProcessingItemPayload(
+                    english_title=english_title,
+                    color=item.color,
+                    size=item.size,
+                    sku_code=item.sku_code,
+                    declared_price=item.declared_price,
+                    weight_g=item.weight_g,
+                    length_cm=item.length_cm,
+                    width_cm=item.width_cm,
+                    height_cm=item.height_cm,
+                    source_url=item.source_url,
+                    stock=item.stock,
+                    ship_days=item.ship_days,
+                ),
             )
-        generated_title = call_openai_compatible_chat(
-            deepseek["base_url"] or "https://api.deepseek.com",
-            deepseek["api_key"],
-            deepseek["model"] or "deepseek-chat",
-            [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+            results.append(
+                BulkGenerateTitleItemResult(
+                    product_id=product_id,
+                    ok=True,
+                    chinese_title=updated.title,
+                    english_title=updated.english_title,
+                )
+            )
+        except Exception as exc:
+            results.append(BulkGenerateTitleItemResult(product_id=product_id, ok=False, error=str(exc)))
+    success_count = sum(1 for result in results if result.ok)
+    return BulkGenerateTitleResult(success_count=success_count, failed_count=len(results) - success_count, results=results)
+
+
+@app.post("/api/processing-items/title-tasks", response_model=ProcessingTitleTask)
+def create_processing_title_task(payload: BulkGenerateTitlePayload) -> ProcessingTitleTask:
+    seen_ids: set[int] = set()
+    ordered_ids: list[int] = []
+    for product_id in payload.ids:
+        product_id = int(product_id)
+        if product_id > 0 and product_id not in seen_ids:
+            ordered_ids.append(product_id)
+            seen_ids.add(product_id)
+    if not ordered_ids:
+        raise HTTPException(status_code=400, detail="请选择要批量生成标题的商品")
+    timestamp = now_text()
+    with connect() as db:
+        cursor = db.execute(
+            """
+            INSERT INTO processing_title_tasks (
+                status, ids_json, total_count, processed_count, success_count, failed_count, cache_hit_count, note, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("queued", json.dumps(ordered_ids), len(ordered_ids), 0, 0, 0, 0, "已加入标题处理队列", timestamp, timestamp),
         )
-        generated_title = extract_title_from_model_response(generated_title, item.title)
-        if not valid_english_title(generated_title):
-            generated_title = english_title_fallback(item.title)
-    else:
-        generated_title = english_title_fallback(item.title)
-    updated = save_processing_override(
-        payload.product_id,
-        ProcessingItemPayload(
-            english_title=generated_title,
-            color=item.color,
-            size=item.size,
-            sku_code=item.sku_code,
-            declared_price=item.declared_price,
-            weight_g=item.weight_g,
-            length_cm=item.length_cm,
-            width_cm=item.width_cm,
-            height_cm=item.height_cm,
-            source_url=item.source_url,
-            stock=item.stock,
-            ship_days=item.ship_days,
-        ),
-    )
-    updated.english_title = f"{updated.english_title}"
-    return updated
+        task_id = cursor.lastrowid
+        row = db.execute("SELECT * FROM processing_title_tasks WHERE id = ?", (task_id,)).fetchone()
+    schedule_processing_title_task_execution()
+    return processing_title_task_from_row(row)
+
+
+@app.get("/api/processing-items/title-tasks/{task_id}", response_model=ProcessingTitleTask)
+def get_processing_title_task(task_id: int) -> ProcessingTitleTask:
+    with connect() as db:
+        row = db.execute("SELECT * FROM processing_title_tasks WHERE id = ?", (task_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="标题处理任务不存在")
+    return processing_title_task_from_row(row)
+
+
+@app.post("/api/processing-items/tasks/{task_type}/{task_id}/retry-failed", response_model=ProcessingTaskHistoryItem)
+def retry_failed_processing_task(task_type: str, task_id: int) -> ProcessingTaskHistoryItem:
+    task_type = task_type.strip().lower()
+    timestamp = now_text()
+    with connect() as db:
+        if task_type == "title":
+            source = db.execute("SELECT * FROM processing_title_tasks WHERE id = ?", (task_id,)).fetchone()
+            if not source:
+                raise HTTPException(status_code=404, detail="标题处理任务不存在")
+            failed_ids = [int(product_id) for product_id in json.loads(source["failed_ids_json"] or "[]") if int(product_id) > 0]
+            if not failed_ids:
+                raise HTTPException(status_code=400, detail="没有可重试的失败商品")
+            cursor = db.execute(
+                """
+                INSERT INTO processing_title_tasks (
+                    status, ids_json, failed_ids_json, total_count, processed_count, success_count, failed_count, cache_hit_count, note, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?)
+                """,
+                ("queued", json.dumps(failed_ids), "[]", len(failed_ids), f"重试标题任务 #{task_id} 的失败商品", timestamp, timestamp),
+            )
+            new_row = db.execute("SELECT * FROM processing_title_tasks WHERE id = ?", (cursor.lastrowid,)).fetchone()
+            schedule_processing_title_task_execution()
+            return processing_task_history_from_row(new_row, "title")
+        if task_type == "field":
+            source = db.execute("SELECT * FROM processing_field_tasks WHERE id = ?", (task_id,)).fetchone()
+            if not source:
+                raise HTTPException(status_code=404, detail="批量字段处理任务不存在")
+            failed_ids = [int(product_id) for product_id in json.loads(source["failed_ids_json"] or "[]") if int(product_id) > 0]
+            if not failed_ids:
+                raise HTTPException(status_code=400, detail="没有可重试的失败商品")
+            cursor = db.execute(
+                """
+                INSERT INTO processing_field_tasks (
+                    status, ids_json, failed_ids_json, fields_json, start_skc, total_count, processed_count, success_count, failed_count, note, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, '', ?, 0, 0, 0, ?, ?, ?)
+                """,
+                ("queued", json.dumps(failed_ids), "[]", source["fields_json"] or "{}", len(failed_ids), f"重试字段任务 #{task_id} 的失败商品", timestamp, timestamp),
+            )
+            new_row = db.execute("SELECT * FROM processing_field_tasks WHERE id = ?", (cursor.lastrowid,)).fetchone()
+            schedule_processing_field_task_execution()
+            return processing_task_history_from_row(new_row, "field")
+    raise HTTPException(status_code=400, detail="任务类型必须是 title 或 field")
 
 
 @app.put("/api/processing-items/{product_id}", response_model=ProcessingItem)
@@ -4290,14 +7539,23 @@ def update_processing_item(product_id: int, payload: ProcessingItemPayload) -> P
     return save_processing_override(product_id, payload)
 
 
-@app.get("/api/collection-items", response_model=list[CollectionItem])
-def list_collection_items(q: str = "", source: str = "", status: str = "", min_price: float = 0, max_price: float = 0, sort: str = "newest") -> list[CollectionItem]:
+@app.get("/api/collection-items", response_model=CollectionItemPage)
+def list_collection_items(
+    q: str = "",
+    source: str = "",
+    status: str = "",
+    min_price: float = 0,
+    max_price: float = 0,
+    sort: str = "newest",
+    page: int = 1,
+    page_size: int = 50,
+) -> CollectionItemPage:
     clauses: list[str] = []
     params: list[object] = []
     if q.strip():
         keyword = f"%{q.strip()}%"
-        clauses.append("(title LIKE ? OR source LIKE ?)")
-        params.extend([keyword, keyword])
+        clauses.append("(title LIKE ? OR source LIKE ? OR source_url LIKE ?)")
+        params.extend([keyword, keyword, keyword])
     if source.strip():
         clauses.append("source = ?")
         params.append(source.strip())
@@ -4314,12 +7572,73 @@ def list_collection_items(q: str = "", source: str = "", status: str = "", min_p
         "sales_desc": "sales DESC, id DESC",
         "price_asc": "price ASC, id DESC",
         "price_desc": "price DESC, id DESC",
+        "oldest": "id ASC",
         "newest": "id DESC",
     }.get(sort, "id DESC")
+    clean_page = max(1, int(page or 1))
+    clean_page_size = max(10, min(int(page_size or 50), 200))
+    offset = (clean_page - 1) * clean_page_size
     where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     with connect() as db:
-        rows = db.execute(f"SELECT * FROM collection_items {where_sql} ORDER BY {order_by}", params).fetchall()
-    return [collection_item_from_row(row) for row in rows]
+        total = int(db.execute(f"SELECT COUNT(*) AS total FROM collection_items {where_sql}", params).fetchone()["total"])
+        rows = db.execute(
+            f"SELECT * FROM collection_items {where_sql} ORDER BY {order_by} LIMIT ? OFFSET ?",
+            [*params, clean_page_size, offset],
+        ).fetchall()
+    total_pages = max(1, (total + clean_page_size - 1) // clean_page_size)
+    return CollectionItemPage(
+        items=[collection_item_from_row(row) for row in rows],
+        total=total,
+        page=clean_page,
+        page_size=clean_page_size,
+        total_pages=total_pages,
+    )
+
+
+@app.get("/api/collection-items/ids")
+def list_collection_item_ids(
+    q: str = "",
+    source: str = "",
+    status: str = "",
+    min_price: float = 0,
+    max_price: float = 0,
+    sort: str = "newest",
+    limit: int = 5000,
+) -> dict[str, object]:
+    clauses: list[str] = []
+    params: list[object] = []
+    if q.strip():
+        keyword = f"%{q.strip()}%"
+        clauses.append("(title LIKE ? OR source LIKE ? OR source_url LIKE ?)")
+        params.extend([keyword, keyword, keyword])
+    if source.strip():
+        clauses.append("source = ?")
+        params.append(source.strip())
+    if status.strip():
+        clauses.append("status = ?")
+        params.append(status.strip())
+    if min_price:
+        clauses.append("price >= ?")
+        params.append(min_price)
+    if max_price:
+        clauses.append("price <= ?")
+        params.append(max_price)
+    order_by = {
+        "sales_desc": "sales DESC, id DESC",
+        "price_asc": "price ASC, id DESC",
+        "price_desc": "price DESC, id DESC",
+        "oldest": "id ASC",
+        "newest": "id DESC",
+    }.get(sort, "id DESC")
+    clean_limit = max(1, min(int(limit or 5000), 20000))
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with connect() as db:
+        total = int(db.execute(f"SELECT COUNT(*) AS total FROM collection_items {where_sql}", params).fetchone()["total"])
+        rows = db.execute(
+            f"SELECT id FROM collection_items {where_sql} ORDER BY {order_by} LIMIT ?",
+            [*params, clean_limit],
+        ).fetchall()
+    return {"ids": [int(row["id"]) for row in rows], "total": total, "limit": clean_limit}
 
 
 @app.get("/api/collection-tasks", response_model=list[CollectionTask])
@@ -4327,6 +7646,33 @@ def list_collection_tasks() -> list[CollectionTask]:
     with connect() as db:
         rows = db.execute("SELECT * FROM collection_tasks ORDER BY id DESC").fetchall()
     return [collection_task_from_row(row) for row in rows]
+
+
+@app.get("/api/collection-tasks/queue")
+def collection_task_queue_status() -> dict[str, object]:
+    with connect() as db:
+        queued = int(db.execute("SELECT COUNT(*) AS total FROM collection_tasks WHERE status = 'queued'").fetchone()["total"])
+        running = int(db.execute("SELECT COUNT(*) AS total FROM collection_tasks WHERE status = 'running'").fetchone()["total"])
+        next_row = db.execute("SELECT id, keyword FROM collection_tasks WHERE status = 'queued' ORDER BY id ASC LIMIT 1").fetchone()
+    return {
+        "active": COLLECTION_TASK_QUEUE_ACTIVE,
+        "queued_count": queued,
+        "running_count": running,
+        "next_task": dict(next_row) if next_row else None,
+    }
+
+
+@app.get("/api/collection-tasks/{task_id}/events", response_model=list[CollectionTaskEvent])
+def list_collection_task_events(task_id: int) -> list[CollectionTaskEvent]:
+    with connect() as db:
+        task = db.execute("SELECT id FROM collection_tasks WHERE id = ?", (task_id,)).fetchone()
+        if not task:
+            raise HTTPException(status_code=404, detail="Collection task not found")
+        rows = db.execute(
+            "SELECT * FROM collection_task_events WHERE task_id = ? ORDER BY id ASC",
+            (task_id,),
+        ).fetchall()
+    return [collection_task_event_from_row(row) for row in rows]
 
 
 @app.post("/api/collection-tasks/clear")
@@ -4366,39 +7712,41 @@ def execute_collection_task(task_id: int) -> CollectionTask:
     with connect() as db:
         row = db.execute("SELECT * FROM collection_tasks WHERE id = ?", (task_id,)).fetchone()
         if not row:
-            raise HTTPException(status_code=404, detail="采集任务不存在")
+            raise HTTPException(status_code=404, detail="Collection task not found")
         if row["mode"] != "1688":
-            raise HTTPException(status_code=400, detail="只有 1688 外部采集任务可以执行")
-        if row["status"] not in {"external_pending", "blocked", "executed_stub", "empty", "failed"}:
-            raise HTTPException(status_code=400, detail="当前状态不允许重复执行，请新建外部采集任务或使用回填结果")
-        if row["mode"] == "1688":
-            payload = CollectionTaskPayload(
-                keyword=row["keyword"],
-                source=row["source"],
-                mode=row["mode"],
-                collector=row["collector"],
-                target_count=row["target_count"],
-                min_price=row["min_price"],
-                max_price=row["max_price"],
-                blacklist=row["blacklist"],
-            )
-            try:
-                provider = "万邦 API" if get_setting_value("onebound_key") and get_setting_value("onebound_secret") else "1688 Cookie"
-                rows = run_onebound_1688_search(payload) if provider == "万邦 API" else run_1688_public_search(payload)
-                imported, skipped = insert_collection_rows_with_db(db, normalize_collection_rows(rows), row["source"])
-                status = "completed" if imported else "empty"
-                note = f"{provider} 真实采集已执行，解析 {len(rows)} 条，写入 {imported} 条，跳过重复/无标题 {skipped} 条。"
-            except HTTPException as exc:
-                status = "failed"
-                imported = 0
-                note = str(exc.detail)
-            db.execute("UPDATE collection_tasks SET status = ?, collector = ?, note = ?, result_count = ?, updated_at = ? WHERE id = ?", (status, "1688_public_search", note, imported, now_text(), task_id))
-            updated = db.execute("SELECT * FROM collection_tasks WHERE id = ?", (task_id,)).fetchone()
-            return collection_task_from_row(updated)
-        db.execute(
-            "UPDATE collection_tasks SET status = ?, note = ?, result_count = ?, updated_at = ? WHERE id = ?",
-            ("failed", "本地模拟采集已移除；仅支持 1688 / 万邦 API 真实采集或文件导入。", 0, now_text(), task_id),
-        )
+            raise HTTPException(status_code=400, detail="Only 1688 collection tasks can be executed")
+        if row["status"] in {"running", "queued"}:
+            return collection_task_from_row(row)
+        if row["status"] not in {"external_pending", "blocked", "executed_stub", "empty", "failed", "cancelled"}:
+            raise HTTPException(status_code=400, detail="Current status cannot be executed again")
+        db.execute("UPDATE collection_tasks SET status = ?, updated_at = ? WHERE id = ?", ("queued", now_text(), task_id))
+        add_collection_task_event(db, task_id, "queued", "info", "\u4efb\u52a1\u5df2\u91cd\u65b0\u52a0\u5165\u91c7\u96c6\u961f\u5217")
+        updated = db.execute("SELECT * FROM collection_tasks WHERE id = ?", (task_id,)).fetchone()
+    schedule_collection_task_execution(task_id)
+    return collection_task_from_row(updated)
+
+
+@app.post("/api/collection-tasks/{task_id}/cancel", response_model=CollectionTask)
+def cancel_collection_task(task_id: int) -> CollectionTask:
+    with connect() as db:
+        row = db.execute("SELECT * FROM collection_tasks WHERE id = ?", (task_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Collection task not found")
+        if row["mode"] != "1688":
+            raise HTTPException(status_code=400, detail="Only 1688 collection tasks can be cancelled")
+        status = row["status"]
+        if status == "queued":
+            note = "采集任务已取消，未开始执行"
+            db.execute("UPDATE collection_tasks SET status = ?, note = ?, updated_at = ? WHERE id = ?", ("cancelled", note, now_text(), task_id))
+            add_collection_task_event(db, task_id, "cancelled", "info", note)
+        elif status == "running":
+            note = "已收到取消请求，任务会在当前采集步骤结束后停止"
+            db.execute("UPDATE collection_tasks SET status = ?, note = ?, updated_at = ? WHERE id = ?", ("cancel_requested", note, now_text(), task_id))
+            add_collection_task_event(db, task_id, "cancel_requested", "info", note)
+        elif status == "cancel_requested":
+            pass
+        else:
+            raise HTTPException(status_code=400, detail="Only queued or running collection tasks can be cancelled")
         updated = db.execute("SELECT * FROM collection_tasks WHERE id = ?", (task_id,)).fetchone()
     return collection_task_from_row(updated)
 
@@ -4408,34 +7756,159 @@ def create_collection_task(payload: CollectionTaskPayload) -> CollectionTask:
     keyword = payload.keyword.strip()
     if not keyword:
         raise HTTPException(status_code=400, detail="请输入采集关键词")
-    target_count = max(1, min(int(payload.target_count or 1), 50))
+    requested_count = max(1, min(int(payload.target_count or 1), COLLECTION_BATCH_TARGET_MAX))
+    batches = collection_task_batches(requested_count)
+    if len(batches) > 1:
+        return create_collection_task_batch(payload, keyword, requested_count, batches)
+    return create_single_collection_task(payload, keyword, batches[0])
+
+
+def create_single_collection_task(
+    payload: CollectionTaskPayload,
+    keyword: str,
+    target_count: int,
+    parent_task_id: int = 0,
+    batch_index: int = 1,
+    batch_total: int = 1,
+) -> CollectionTask:
     min_price = max(float(payload.min_price or 0), 0)
     max_price = max(float(payload.max_price or 0), 0)
     if max_price and min_price > max_price:
         raise HTTPException(status_code=400, detail="最低价不能高于最高价")
     timestamp = now_text()
     mode, collector, note = resolve_collector(payload)
+    batch_note = f"批次 {batch_index}/{batch_total}，目标 {target_count} 条。" if batch_total > 1 else ""
     with connect() as db:
         cursor = db.execute(
             """
-            INSERT INTO collection_tasks (keyword, source, mode, collector, target_count, min_price, max_price, blacklist, status, note, request_path, result_count, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO collection_tasks (
+                keyword, source, mode, collector, target_count, min_price, max_price, blacklist,
+                status, note, request_path, result_count, parent_task_id, batch_index, batch_total, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (keyword, payload.source, mode, collector, target_count, min_price, max_price, payload.blacklist, "running", note, "", 0, timestamp, timestamp),
+            (
+                keyword,
+                payload.source,
+                mode,
+                collector,
+                target_count,
+                min_price,
+                max_price,
+                payload.blacklist,
+                "queued",
+                f"{batch_note}{note}",
+                "",
+                0,
+                parent_task_id,
+                batch_index,
+                batch_total,
+                timestamp,
+                timestamp,
+            ),
         )
         task_id = cursor.lastrowid
-        result = run_collector(payload, task_id)
-        request_path = write_collection_request(task_id, payload, result.mode, result.collector) if result.mode == "1688" else ""
+        add_collection_task_event(db, task_id, "created", "running", f"采集任务已创建，目标 {target_count} 条")
+        result = run_collector(CollectionTaskPayload(**{**payload.model_dump(), "target_count": target_count}), task_id)
+        request_path = write_collection_request(task_id, CollectionTaskPayload(**{**payload.model_dump(), "target_count": target_count}), result.mode, result.collector) if result.mode == "1688" else ""
         created, skipped = insert_collection_candidates_with_db(db, result.candidates)
+        add_collection_task_event(db, task_id, "parsed", "info", f"采集器返回 {len(result.candidates)} 条，新增 {created} 条，跳过 {skipped} 条", parsed_count=len(result.candidates), imported_count=created, skipped_count=skipped)
         status = "external_pending" if request_path else ("completed" if created else "empty")
-        note = result.note if request_path else f"{result.note} 写入 {created} 条，跳过重复 {skipped} 条。".strip()
-        db.execute("UPDATE collection_tasks SET mode = ?, collector = ?, status = ?, note = ?, request_path = ?, result_count = ?, updated_at = ? WHERE id = ?", (result.mode, result.collector, status, note, request_path, created, now_text(), task_id))
+        final_note = result.note if request_path else f"{result.note} 写入 {created} 条，跳过重复 {skipped} 条。".strip()
+        if batch_note:
+            final_note = f"{batch_note}{final_note}"
+        add_collection_task_event(db, task_id, "finished", "success" if created else "info", final_note, imported_count=created, skipped_count=skipped)
+        db.execute(
+            """
+            UPDATE collection_tasks
+            SET mode = ?, collector = ?, status = ?, note = ?, request_path = ?, result_count = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (result.mode, result.collector, status, final_note, request_path, created, now_text(), task_id),
+        )
         row = db.execute("SELECT * FROM collection_tasks WHERE id = ?", (task_id,)).fetchone()
     task = collection_task_from_row(row)
     if task.mode == "1688" and task.status == "external_pending":
         return execute_collection_task(task.id)
     return task
 
+
+def create_collection_task_batch(payload: CollectionTaskPayload, keyword: str, requested_count: int, batches: list[int]) -> CollectionTask:
+    min_price = max(float(payload.min_price or 0), 0)
+    max_price = max(float(payload.max_price or 0), 0)
+    if max_price and min_price > max_price:
+        raise HTTPException(status_code=400, detail="最低价不能高于最高价")
+    timestamp = now_text()
+    batch_total = len(batches)
+    with connect() as db:
+        cursor = db.execute(
+            """
+            INSERT INTO collection_tasks (
+                keyword, source, mode, collector, target_count, min_price, max_price, blacklist,
+                status, note, request_path, result_count, parent_task_id, batch_index, batch_total, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                keyword,
+                payload.source,
+                payload.mode,
+                "batch_parent",
+                requested_count,
+                min_price,
+                max_price,
+                payload.blacklist,
+                "completed",
+                f"已拆分为 {batch_total} 个采集子任务，每批最多 {COLLECTION_TARGET_MAX} 条，子任务会按队列串行执行。",
+                "",
+                0,
+                0,
+                0,
+                batch_total,
+                timestamp,
+                timestamp,
+            ),
+        )
+        parent_task_id = cursor.lastrowid
+        add_collection_task_event(db, parent_task_id, "split", "info", f"目标 {requested_count} 条已拆分为 {batch_total} 个子任务")
+        first_child_row: sqlite3.Row | None = None
+        for index, batch_count in enumerate(batches, start=1):
+            child_cursor = db.execute(
+                """
+                INSERT INTO collection_tasks (
+                    keyword, source, mode, collector, target_count, min_price, max_price, blacklist,
+                    status, note, request_path, result_count, parent_task_id, batch_index, batch_total, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    keyword,
+                    payload.source,
+                    "1688",
+                    payload.collector,
+                    batch_count,
+                    min_price,
+                    max_price,
+                    payload.blacklist,
+                    "queued",
+                    f"批次 {index}/{batch_total}，目标 {batch_count} 条，等待队列执行。",
+                    "",
+                    0,
+                    parent_task_id,
+                    index,
+                    batch_total,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            child_id = child_cursor.lastrowid
+            add_collection_task_event(db, child_id, "created", "running", f"批次 {index}/{batch_total} 已创建，目标 {batch_count} 条")
+            request_payload = CollectionTaskPayload(**{**payload.model_dump(), "target_count": batch_count})
+            request_path = write_collection_request(child_id, request_payload, "1688", payload.collector)
+            db.execute("UPDATE collection_tasks SET request_path = ?, updated_at = ? WHERE id = ?", (request_path, now_text(), child_id))
+            if first_child_row is None:
+                first_child_row = db.execute("SELECT * FROM collection_tasks WHERE id = ?", (child_id,)).fetchone()
+        row = first_child_row or db.execute("SELECT * FROM collection_tasks WHERE id = ?", (parent_task_id,)).fetchone()
+    if row and int(row["parent_task_id"] or 0):
+        schedule_collection_task_execution(int(row["id"]))
+    return collection_task_from_row(row)
 
 @app.post("/api/collection-items", response_model=CollectionItem)
 def create_collection_item(payload: CollectionItemPayload) -> CollectionItem:
@@ -4447,8 +7920,48 @@ def create_collection_item(payload: CollectionItemPayload) -> CollectionItem:
             """,
             (payload.title, payload.source, payload.source_url, payload.image_url, payload.price, payload.sales, payload.image_count, now_text()),
         )
+        enqueue_collection_image_download(db, cursor.lastrowid, payload.image_url)
         row = db.execute("SELECT * FROM collection_items WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    schedule_collection_image_task_execution()
     return collection_item_from_row(row)
+
+
+@app.get("/api/collection-image-tasks/status", response_model=CollectionImageTaskStatus)
+def collection_image_task_status() -> CollectionImageTaskStatus:
+    with connect() as db:
+        counts = {
+            row["status"]: int(row["total"])
+            for row in db.execute("SELECT status, COUNT(*) AS total FROM collection_image_tasks GROUP BY status").fetchall()
+        }
+    return CollectionImageTaskStatus(
+        queued_count=counts.get("queued", 0),
+        running_count=counts.get("running", 0),
+        completed_count=counts.get("completed", 0),
+        failed_count=counts.get("failed", 0),
+        active=COLLECTION_IMAGE_TASK_QUEUE_ACTIVE,
+    )
+
+
+@app.post("/api/collection-items/localize-images")
+def localize_collection_images(payload: CollectionBulkPayload) -> dict[str, int]:
+    if not payload.ids:
+        return {"localized_count": 0, "failed_count": 0}
+    localized_count = 0
+    failed_count = 0
+    placeholders = ",".join("?" for _ in payload.ids)
+    with connect() as db:
+        rows = db.execute(f"SELECT id, image_url FROM collection_items WHERE id IN ({placeholders})", payload.ids).fetchall()
+        for row in rows:
+            current = str(row["image_url"] or "").strip()
+            if not current or current.startswith("/images/"):
+                continue
+            local_image = save_collection_image_from_url(row["id"], current)
+            if local_image:
+                db.execute("UPDATE collection_items SET image_url = ? WHERE id = ?", (local_image, row["id"]))
+                localized_count += 1
+            else:
+                failed_count += 1
+    return {"localized_count": localized_count, "failed_count": failed_count}
 
 
 @app.post("/api/collection-items/import-file", response_model=CollectionImportResult)
@@ -4471,21 +7984,23 @@ def import_collection_file(source: str = Form("外部文件"), file: UploadFile 
 def import_collection_task_result(task_id: int, file: UploadFile = File(...)) -> CollectionTask:
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in {".csv", ".xlsx", ".xlsm", ".json"}:
-        raise HTTPException(status_code=400, detail="仅支持 CSV / XLSX / JSON 文件")
+        raise HTTPException(status_code=400, detail="Only CSV / XLSX / JSON files are supported")
     with connect() as db:
         task = db.execute("SELECT * FROM collection_tasks WHERE id = ?", (task_id,)).fetchone()
     if not task:
-        raise HTTPException(status_code=404, detail="采集任务不存在")
+        raise HTTPException(status_code=404, detail="Collection task not found")
     import_dir = DATA_DIR / "collection_results"
     import_dir.mkdir(parents=True, exist_ok=True)
     target = import_dir / f"collection_task_{task_id}_result_{datetime.now().strftime('%Y%m%d_%H%M%S')}{suffix}"
     with target.open("wb") as output:
         shutil.copyfileobj(file.file, output)
     rows = parse_collection_rows(target)
-    imported, skipped = insert_collection_rows(rows, task["source"])
-    status = "completed" if imported else "empty"
-    note = f"已从外部结果文件回填 {imported} 条候选，跳过 {skipped} 条。文件：{target}"
     with connect() as db:
+        add_collection_task_event(db, task_id, "import_result", "running", f"\u5f00\u59cb\u56de\u586b\u91c7\u96c6\u7ed3\u679c\u6587\u4ef6\uff1a{file.filename or target.name}")
+        imported, skipped = insert_collection_rows_with_db(db, rows, task["source"])
+        status = "completed" if imported else "empty"
+        note = f"\u56de\u586b\u5b8c\u6210\uff1a\u65b0\u589e {imported} \u6761\uff0c\u8df3\u8fc7 {skipped} \u6761\uff0c\u6587\u4ef6={target}"
+        add_collection_task_event(db, task_id, "write", "success" if imported else "info", note, parsed_count=len(rows), imported_count=imported, skipped_count=skipped)
         db.execute(
             "UPDATE collection_tasks SET status = ?, note = ?, result_count = ?, updated_at = ? WHERE id = ?",
             (status, note, imported, now_text(), task_id),
@@ -4513,86 +8028,84 @@ def import_collection_items(payload: ImportCollectionPayload) -> list[Product]:
     if not payload.ids:
         raise HTTPException(status_code=400, detail="select collection items first")
     imported: list[Product] = []
+    requested_ids = [int(item_id) for item_id in payload.ids if int(item_id) > 0]
     with connect() as db:
-        rows = db.execute(
-            f"SELECT * FROM collection_items WHERE id IN ({','.join(['?'] * len(payload.ids))})",
-            payload.ids,
-        ).fetchall()
-        if not rows:
+        rows: list[sqlite3.Row] = []
+        for id_batch in chunked_ids(requested_ids):
+            placeholders = ",".join("?" for _ in id_batch)
+            rows.extend(db.execute(f"SELECT * FROM collection_items WHERE id IN ({placeholders})", id_batch).fetchall())
+        row_by_id = {int(row["id"]): row for row in rows}
+        ordered_rows = [row_by_id[item_id] for item_id in requested_ids if item_id in row_by_id]
+        if not ordered_rows:
             raise HTTPException(status_code=404, detail="collection item not found")
-        for row in rows:
-            skc = f"DS{datetime.now().strftime('%y%m%d')}{row['id']:03d}"
-            suffix = 1
-            base_skc = skc
-            while db.execute("SELECT 1 FROM products WHERE skc = ?", (skc,)).fetchone():
-                suffix += 1
-                skc = f"{base_skc}-{suffix}"
-            has_collection_image = bool(row["image_url"])
-            item = ProductPayload(
-                title=row["title"],
-                skc=skc,
-                sku_summary="pending",
-                purchase_price=float(row["price"]),
-                first_mile=28.0,
-                platform_cost=6.5,
-                status="待处理" if has_collection_image else "pending_main_image",
-            )
-            total_cost, estimated_profit, gross_margin = recalc(item)
-            timestamp = now_text()
-            cursor = db.execute(
-                """
-                INSERT INTO products (
-                    title, skc, sku_summary, purchase_price, first_mile, platform_cost,
-                    total_cost, estimated_profit, gross_margin, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    item.title,
-                    item.skc,
-                    item.sku_summary,
-                    item.purchase_price,
-                    item.first_mile,
-                    item.platform_cost,
-                    total_cost,
-                    estimated_profit,
-                    gross_margin,
-                    item.status,
-                    timestamp,
-                    timestamp,
-                ),
-            )
-            product_id = cursor.lastrowid
-            main_image = save_product_main_image_from_url(product_id, row["image_url"])
-            if main_image:
-                db.execute("UPDATE products SET main_image = ?, status = ?, updated_at = ? WHERE id = ?", (main_image, "待处理", now_text(), product_id))
-            image_source_url = row["image_url"] or row["source_url"]
-            create_processing_override_for_import(db, product_id, item, image_source_url, total_cost)
-            if row["source_url"]:
-                try_enrich_product_from_onebound_detail(db, product_id, row["source_url"])
-            db.execute("UPDATE collection_items SET selected = 1, status = 'imported' WHERE id = ?", (row["id"],))
-            product_row = db.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
-            imported.append(product_from_row(product_row))
+        for row in ordered_rows:
+            if row["status"] == "imported":
+                continue
+            imported.append(import_collection_row_as_product(db, row))
     return imported
 
+
+@app.post("/api/collection-items/import-tasks", response_model=CollectionImportTask)
+def create_collection_import_task(payload: ImportCollectionPayload) -> CollectionImportTask:
+    requested_ids = [int(item_id) for item_id in payload.ids if int(item_id) > 0]
+    if not requested_ids:
+        raise HTTPException(status_code=400, detail="select collection items first")
+    timestamp = now_text()
+    with connect() as db:
+        existing_count = 0
+        for id_batch in chunked_ids(requested_ids):
+            placeholders = ",".join("?" for _ in id_batch)
+            existing_count += int(db.execute(f"SELECT COUNT(*) AS total FROM collection_items WHERE id IN ({placeholders})", id_batch).fetchone()["total"])
+        if not existing_count:
+            raise HTTPException(status_code=404, detail="collection item not found")
+        cursor = db.execute(
+            """
+            INSERT INTO collection_import_tasks (
+                status, ids_json, total_count, processed_count, imported_count, skipped_count, failed_count, note, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("queued", json.dumps(requested_ids), len(requested_ids), 0, 0, 0, 0, "已加入商品库入库队列", timestamp, timestamp),
+        )
+        task_id = cursor.lastrowid
+        row = db.execute("SELECT * FROM collection_import_tasks WHERE id = ?", (task_id,)).fetchone()
+    schedule_collection_import_task_execution(task_id)
+    return collection_import_task_from_row(row)
+
+
+@app.get("/api/collection-items/import-tasks/{task_id}", response_model=CollectionImportTask)
+def get_collection_import_task(task_id: int) -> CollectionImportTask:
+    with connect() as db:
+        row = db.execute("SELECT * FROM collection_import_tasks WHERE id = ?", (task_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="collection import task not found")
+    return collection_import_task_from_row(row)
 
 @app.post("/api/collection-items/skip")
 def skip_collection_items(payload: CollectionBulkPayload) -> dict[str, int]:
     if not payload.ids:
         return {"updated_count": 0}
-    placeholders = ",".join("?" for _ in payload.ids)
+    updated_count = 0
+    ids = [int(item_id) for item_id in payload.ids if int(item_id) > 0]
     with connect() as db:
-        result = db.execute(f"UPDATE collection_items SET status = 'skipped' WHERE id IN ({placeholders}) AND status != 'imported'", payload.ids)
-    return {"updated_count": result.rowcount}
+        for id_batch in chunked_ids(ids):
+            placeholders = ",".join("?" for _ in id_batch)
+            result = db.execute(f"UPDATE collection_items SET status = 'skipped' WHERE id IN ({placeholders}) AND status != 'imported'", id_batch)
+            updated_count += result.rowcount
+    return {"updated_count": updated_count}
 
 
 @app.post("/api/collection-items/delete")
 def delete_collection_items(payload: CollectionBulkPayload) -> dict[str, int]:
     if not payload.ids:
         return {"deleted_count": 0}
-    placeholders = ",".join("?" for _ in payload.ids)
+    deleted_count = 0
+    ids = [int(item_id) for item_id in payload.ids if int(item_id) > 0]
     with connect() as db:
-        result = db.execute(f"DELETE FROM collection_items WHERE id IN ({placeholders})", payload.ids)
-    return {"deleted_count": result.rowcount}
+        for id_batch in chunked_ids(ids):
+            placeholders = ",".join("?" for _ in id_batch)
+            result = db.execute(f"DELETE FROM collection_items WHERE id IN ({placeholders})", id_batch)
+            deleted_count += result.rowcount
+    return {"deleted_count": deleted_count}
 
 
 @app.delete("/api/products/{product_id}")

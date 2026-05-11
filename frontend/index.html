@@ -4,36 +4,38 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>上货助手</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260506-14" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260511-freight" />
 </head>
 <body>
   <div class="shell">
     <aside class="sidebar">
       <div class="brand"><div class="logo">上</div><div><div class="brand-title">上货助手</div><div class="brand-sub">本地商品工作台</div></div></div>
       <div class="nav-group">商品中心</div>
-      <button class="nav-item" data-page="new">🔎 商品采集</button>
+      <button class="nav-item active" data-page="new">🔎 商品采集</button>
       <button class="nav-item" data-page="collect-results">📊 采集结果</button>
       <button class="nav-item" data-page="import">📋 商品处理</button>
+      <button class="nav-item" data-page="processing-tasks">🧾 处理任务</button>
       <div class="nav-group">上货中心</div>
       <button class="nav-item" data-page="tasks">🚚 上货任务</button>
       <button class="nav-item" data-page="records">📝 发布记录</button>
       <div class="nav-group">利润管理</div>
-      <button class="nav-item active" data-page="products">📦 商品库</button>
+      <button class="nav-item" data-page="products">📦 商品库</button>
+      <button class="nav-item" data-page="profit-management">运费模板</button>
       <div class="nav-group">配置中心</div>
       <button class="nav-item" data-page="images">💬 提示词管理</button>
-      <button class="nav-item" data-page="api">🔑 API 管理</button>
+      <button class="nav-item" data-page="spec-mapping">🎨 规格映射</button>
+      <button class="nav-item hidden" data-page="api" style="display:none">🔑 API 管理</button>
       <button class="nav-item" data-page="settings">⚙️ 设置中心</button>
     </aside>
 
     <main class="main">
-      <section class="page active-page" id="products">
+      <section class="page" id="products">
         <div class="page-head">
           <div><h1>商品库</h1><div class="desc">网页内建商品工作台，商品库每个商品只保留一张主图</div></div>
-          <div class="actions"><input id="searchInput" class="input search" placeholder="按标题/SKC/SKU 搜索..."/><select id="productStatusFilter" class="select"><option value="">全部状态</option><option value="待处理">待处理</option><option value="利润正常">利润正常</option><option value="待补主图">待补主图</option><option value="pending_main_image">待补主图(旧)</option></select><select id="productImageFilter" class="select"><option value="">全部图片</option><option value="has">已有主图</option><option value="missing">缺主图</option></select><button id="searchButton" class="btn primary">搜索</button></div>
+          <div class="actions"><input id="searchInput" class="input search" placeholder="按标题/SKC/SKU 搜索..."/><select id="productStatusFilter" class="select"><option value="">全部状态</option><option value="待处理">待处理</option><option value="利润正常">利润正常</option><option value="利润异常">利润异常</option></select><select id="productImageFilter" class="select"><option value="">全部图片</option><option value="has">已有主图</option><option value="missing">缺主图</option></select></div>
         </div>
         <div class="actions toolbar">
           <button id="newProductButton" class="btn primary">＋ 新增商品</button>
-          <select id="bulkProductStatus" class="select"><option value="利润正常">利润正常</option><option value="待补主图">待补主图</option><option value="待处理">待处理</option></select>
           <button id="bulkProductStatusButton" class="btn ghost">批量改状态</button>
           <button id="bulkProductDeleteButton" class="btn outline-orange">批量删除</button>
           <button id="refreshButton" class="btn outline-blue">刷新</button>
@@ -50,7 +52,31 @@
         </div>
       </section>
 
-      <section class="page" id="new">
+      <section class="page" id="profit-management">
+        <div class="page-head">
+          <div><h1>运费模板</h1><div class="desc">维护头程、尾程和仓库操作费规则，用于商品库自动核价和利润计算</div></div>
+          <div class="actions"><label class="btn primary file-label">导入运费表<input id="freightImportFile" type="file" accept=".xlsx,.xls" /></label><button id="saveFreightRulesButton" class="btn outline-orange" type="button">保存模板</button><button id="refreshFreightRulesButton" class="btn outline-blue" type="button">刷新规则</button></div>
+        </div>
+        <div class="metric-grid" id="freightRuleSummary"></div>
+        <div class="card">
+          <div class="card-head"><div class="card-title">运费规则编辑</div><span class="badge orange">自动核价</span></div>
+          <div class="card-body">
+            <div class="freight-editor">
+              <div class="form-grid compact">
+                <label>默认尾程 Zone<select id="freightDefaultZone" class="select"><option value="zone1">zone1</option><option value="zone2">zone2</option><option value="zone3">zone3</option><option value="zone4">zone4</option><option value="zone5">zone5</option><option value="zone6">zone6</option><option value="zone7">zone7</option><option value="zone8">zone8</option><option value="zone9">zone9</option></select></label>
+                <label>默认仓库操作费 / 件<input id="freightWarehouseFee" class="input" type="number" min="0" step="0.01" value="15" /></label>
+              </div>
+              <div class="freight-editor-head"><b>头程规则</b><button id="addFirstMileRuleButton" class="btn ghost" type="button">新增头程</button></div>
+              <div id="firstMileRuleEditor" class="freight-rule-editor"></div>
+              <div class="freight-editor-head"><b>尾程规则</b><button id="addLastMileRuleButton" class="btn ghost" type="button">新增尾程</button></div>
+              <div id="lastMileRuleEditor" class="freight-rule-editor"></div>
+            </div>
+            <div id="freightRuleDetails" class="spec-map-groups" style="margin-top:16px;"><div class="empty-row">尚未加载运费规则</div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page active-page" id="new">
         <div class="page-head">
           <div>
             <h1>商品采集</h1>
@@ -65,10 +91,10 @@
               <label>关键词<input id="collectionKeyword" class="input" placeholder="例如：牛仔短裤" value="女士牛仔短裤" /></label>
               <label>来源<select id="collectionSource" class="select"><option value="1688">1688</option><option value="Temu">Temu</option><option value="Amazon">Amazon</option></select></label>
               <label>采集方式<select id="collectionMode" class="select"><option value="1688">1688 商品采集</option></select></label>
-              <label>目标数量<input id="collectionTargetCount" class="input" type="number" value="8" min="1" max="50" /></label>
+              <label>目标数量<input id="collectionTargetCount" class="input" type="number" value="8" min="1" max="1000" /></label>
               <label>最低价<input id="collectionMinPrice" class="input" type="number" step="0.01" value="20" /></label>
               <label>最高价<input id="collectionMaxPrice" class="input" type="number" step="0.01" value="60" /></label>
-              <label>黑名单<input id="collectionBlacklist" class="input" placeholder="多个词用逗号分隔，如：破损,二手" /></label>
+              <label>黑名单<input id="collectionBlacklist" class="input" autocomplete="off" value="" placeholder="多个词用逗号分隔，如：破损,二手" /></label>
             </div>
           </div>
           <div class="card">
@@ -80,7 +106,7 @@
           <div class="card-head"><div class="card-title">采集任务</div><div class="actions"><span class="badge blue">任务队列</span><button id="clearCollectionTasksButton" class="btn outline-orange">清空历史记录</button></div></div>
           <div class="card-body table-wrap">
             <table>
-              <thead><tr><th>任务ID</th><th>关键词</th><th>来源</th><th>状态</th><th>目标</th><th>采集数</th><th>结果数</th><th>入库</th><th>跳过</th><th>失败</th><th>时间</th><th>重试</th></tr></thead>
+              <thead><tr><th>任务ID</th><th>关键词</th><th>来源</th><th>状态</th><th>目标</th><th>采集数</th><th>结果数</th><th>入库</th><th>跳过</th><th>失败</th><th>时间</th><th>&#25805;&#20316;</th></tr></thead>
               <tbody id="collectionTasksBody"></tbody>
             </table>
           </div>
@@ -94,10 +120,8 @@
             <div class="desc">查看、筛选和处理已采集到的候选商品</div>
           </div>
           <div class="actions">
-            <button id="downloadCollectionTemplateButton" class="btn outline-blue">下载模板</button>
-            <input id="collectionFileInput" type="file" accept=".csv,.xlsx,.xlsm,.json" style="display:none" />
-            <select id="collectionFileSource" class="select"><option value="文件导入">文件导入</option><option value="1688">1688</option><option value="Temu">Temu</option></select>
-            <button id="importCollectionFileButton" class="btn ghost">导入文件</button>
+            <button id="selectFilteredCollectionButton" class="btn outline-blue">&#36873;&#20013;&#31579;&#36873;&#32467;&#26524;</button>
+            <button id="clearCollectionSelectionButton" class="btn ghost">&#28165;&#31354;&#36873;&#25321;</button>
             <button id="deleteSelectedCollectionButton" class="btn outline-orange">批量删除</button>
             <button id="importSelectedButton" class="btn primary">加入商品库</button>
           </div>
@@ -105,7 +129,7 @@
         <div class="filters">
           <input id="collectionSearchInput" class="input search" placeholder="搜索标题/来源..." />
           <select id="collectionStatusFilter" class="select"><option value="">全部状态</option><option value="pending">待处理</option><option value="imported">已入库</option><option value="skipped">已跳过</option></select>
-          <select id="collectionSourceFilter" class="select"><option value="">全部来源</option><option value="1688">1688</option><option value="Temu">Temu</option><option value="文件导入">文件导入</option></select>
+          <select id="collectionSourceFilter" class="select"><option value="">全部来源</option><option value="1688">1688</option><option value="Temu">Temu</option></select>
           <input id="collectionMinPriceFilter" class="input" type="number" step="0.01" placeholder="最低价" />
           <input id="collectionMaxPriceFilter" class="input" type="number" step="0.01" placeholder="最高价" />
           <select id="collectionSortFilter" class="select"><option value="newest">最新</option><option value="sales_desc">销量从高到低</option><option value="price_asc">价格从低到高</option><option value="price_desc">价格从高到低</option></select>
@@ -119,6 +143,15 @@
               <tbody id="collectionBody"></tbody>
             </table>
           </div>
+
+          <div class="pagination-bar">
+            <div id="collectionPageInfo" class="desc">&#31532; 1 / 1 &#39029;&#65292;&#20849; 0 &#26465;</div>
+            <div class="actions">
+              <button id="collectionPrevPageButton" class="btn ghost">&#19978;&#19968;&#39029;</button>
+              <select id="collectionPageSizeSelect" class="select"><option value="50">&#27599;&#39029; 50</option><option value="100">&#27599;&#39029; 100</option><option value="200">&#27599;&#39029; 200</option></select>
+              <button id="collectionNextPageButton" class="btn ghost">&#19979;&#19968;&#39029;</button>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -126,35 +159,80 @@
         <div class="page-head">
           <div><h1>商品处理</h1><div class="desc">对采集或商品库数据做补图、标题、成本和导出处理</div></div>
           <div class="actions">
+            <input id="processingSearchInput" class="input search" placeholder="搜索 SKC / 标题 / 链接..." />
+            <div class="field-settings-menu">
+              <button id="processingFieldSettingsButton" class="icon-btn field-settings-button" type="button" title="批量字段设置">⚙</button>
+              <div id="processingFieldSettingsPanel" class="field-settings-panel hidden">
+                <div class="field-settings-head"><b>批量字段设置</b><span>采集结果进入商品处理后自动套用</span></div>
+                <div class="form-grid compact-form">
+                  <label>申报价<div class="inline-fields"><select id="defaultProcessingDeclaredPriceMode" class="select mini-select"><option value="add">+</option><option value="multiply">×</option></select><input id="defaultProcessingDeclaredPrice" class="input" type="number" step="0.01" /></div></label>
+                  <label>重量(g)<input id="defaultProcessingWeightG" class="input" type="number" /></label>
+                  <label>长(cm)<input id="defaultProcessingLengthCm" class="input" type="number" /></label>
+                  <label>宽(cm)<input id="defaultProcessingWidthCm" class="input" type="number" /></label>
+                  <label>高(cm)<input id="defaultProcessingHeightCm" class="input" type="number" /></label>
+                  <label>库存<input id="defaultProcessingStock" class="input" type="number" /></label>
+                  <label>发货时效<select id="defaultProcessingShipDays" class="select"><option value="1">1天</option><option value="2">2天</option><option value="9">9天</option></select></label>
+                  <label>起始 SKC<input id="defaultProcessingStartSkc" class="input" placeholder="留空则不自动递增 SKC" /></label>
+                </div>
+                <div class="dialog-actions"><button id="saveProcessingFieldSettingsButton" class="btn primary" type="button">保存设置</button></div>
+              </div>
+            </div>
             <label class="inline-check"><input id="selectAllProcessing" type="checkbox" /> 全选</label>
-            <select id="processingStatusFilter" class="select"><option value="">全部</option><option value="ready_to_export">可导出</option><option value="needs_image">需补图</option></select>
+            <select id="processingStatusFilter" class="select"><option value="">全部状态</option><option value="ready_to_export">可导出</option><option value="needs_image">需补图</option><option value="exception_pool">异常池</option></select>
+            <select id="processingExceptionTypeFilter" class="select"><option value="">全部异常</option><option value="title">标题异常</option><option value="spec">规格异常</option><option value="image">图片异常</option><option value="field">字段异常</option><option value="link">链接异常</option></select>
             <select id="processingBatchAction" class="select">
-              <option value="edit_fields">批量编辑字段</option>
+              <option value="" selected>批量操作...</option>
               <option value="generate_titles">批量处理商品标题</option>
               <option value="dedupe_images">批量图片去重</option>
               <option value="delete">批量删除</option>
             </select>
-            <button id="runProcessingBatchActionButton" class="btn outline-blue">执行批量操作</button>
             <button id="refreshProcessingButton" class="btn outline-blue">刷新</button>
-            <button id="exportMiaoshouButton" class="btn primary">导出店小秘表</button>
           </div>
         </div>
         <div class="processing-workbench">
           <div class="card processing-list-card">
-            <div class="card-head"><div class="card-title">处理队列</div><span class="badge blue">商品数据</span></div>
+            <div class="card-head"><div class="card-title">处理队列</div><span id="processingListBadge" class="badge blue">商品数据</span></div>
             <div id="processingBody" class="processing-list"></div>
+            <div class="pagination-bar processing-pagination">
+              <span id="processingPageInfo" class="desc">第 1 / 1 页</span>
+              <div class="actions">
+                <select id="processingPageSize" class="select"><option value="50">50/页</option><option value="100">100/页</option><option value="200">200/页</option></select>
+                <button id="processingPrevPage" class="btn ghost" type="button">上一页</button>
+                <button id="processingNextPage" class="btn ghost" type="button">下一页</button>
+              </div>
+            </div>
           </div>
           <div class="card processing-detail-card">
             <div class="card-head"><div class="card-title">处理详情</div><span id="processingDetailStatus" class="badge orange">待处理</span></div>
             <div id="processingDetailPanel" class="card-body"></div>
           </div>
         </div>
+
+
+
       </section>
+      <section class="page" id="processing-tasks">
+        <div class="page-head">
+          <div><h1>处理任务中心</h1><div class="desc">查看批量标题、批量字段等商品处理任务历史，失败项可单独重试</div></div>
+          <div class="actions">
+            <select id="processingTaskTypeFilter" class="select"><option value="">全部类型</option><option value="title">批量标题</option><option value="field">批量字段</option></select>
+            <select id="processingTaskStatusFilter" class="select"><option value="">全部状态</option><option value="queued">排队中</option><option value="running">运行中</option><option value="completed">已完成</option><option value="failed">失败</option><option value="retryable">可重试</option></select>
+            <button id="refreshProcessingTasksButton" class="btn outline-blue">刷新任务</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><div class="card-title">完整任务历史</div><span id="processingTaskCenterBadge" class="badge blue">0 条</span></div>
+          <div id="processingTaskCenterBody" class="processing-task-history"><div class="empty-row">暂无处理任务</div></div>
+          <div class="pagination-bar">
+            <span id="processingTaskCenterPageInfo" class="desc">第 1 / 1 页</span>
+            <div class="actions"><button id="processingTaskCenterPrev" class="btn ghost" type="button">上一页</button><button id="processingTaskCenterNext" class="btn ghost" type="button">下一页</button></div>
+          </div>
+        </div></section>
 
       <section class="page" id="tasks">
         <div class="page-head">
           <div><h1>TEMU 上品任务</h1><div class="desc">按当前配置做上货预检、导出正式表格，并调用正式 RPA</div></div>
-          <div class="actions"><a id="downloadWindowsAppButton" class="btn outline-blue" href="https://temutp423-1320875862.cos.ap-beijing.myqcloud.com/temu/release/upload-assistant-windows.zip">下载上货软件</a><button id="preflightButton" class="btn outline-blue">上货预检</button><button id="clearUploadTasksButton" class="btn outline-orange">清空任务</button><button id="saveUploadOperationSettingsButton" class="btn outline-blue">保存配置</button><button id="createUploadTaskButton" class="btn primary">正式上货</button></div>
+          <div class="actions"><button id="cleanupLocalDataButton" class="btn outline-orange">清理本地数据</button><button id="clearUploadTasksButton" class="btn outline-orange">清空任务</button><button id="saveUploadOperationSettingsButton" class="btn outline-blue">保存配置</button><button id="createUploadTaskButton" class="btn primary">开始上货</button></div>
         </div>
 
         <div class="temu-upload-layout refined">
@@ -195,6 +273,7 @@
         </div>
       </section>
 
+
       <section class="page" id="records">
         <div class="page-head">
           <div><h1>发布记录</h1><div class="desc">查看店小秘上货结果、失败原因和执行时间</div></div>
@@ -232,6 +311,55 @@
               <thead><tr><th>名称</th><th>适用类目</th><th>类型</th><th>用途</th><th>状态</th><th>操作</th></tr></thead>
               <tbody id="promptsBody"></tbody>
             </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="spec-mapping">
+        <div class="page-head">
+          <div><h1>规格映射</h1><div class="desc">把供应商颜色和尺码统一转换成平台可上传的标准规格</div></div>
+          <button id="refreshSpecMappingsButton" class="btn outline-blue">刷新映射</button>
+        </div>
+        <div class="metric-grid" id="specMappingSummary"></div>
+        <div class="task-layout">
+          <div class="card">
+            <div class="card-head"><div class="card-title">颜色标准表</div><span id="specColorAliasBadge" class="badge blue">加载中</span></div>
+            <div class="card-body">
+              <div id="specColorGroups" class="spec-map-groups"><div class="empty-row">正在加载颜色映射...</div></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><div class="card-title">尺码标准表</div><span class="badge green">女士牛仔短裤</span></div>
+            <div class="card-body">
+              <div id="specSizeChips" class="size-chip-list"><div class="empty-row">正在加载尺码映射...</div></div>
+              <div id="specSizeAliasList" class="spec-alias-list"></div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><div class="card-title">待批量修复异常规格</div><span id="specExceptionBadge" class="badge red">0 个</span></div>
+          <div class="card-body">
+            <div id="specExceptionList" class="spec-exception-list"><div class="empty-row">暂无待修复规格异常</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><div class="card-title">异常规格一键绑定</div><span class="badge purple">本地别名</span></div>
+          <div class="card-body">
+            <div class="form-grid spec-alias-form">
+              <label>规格类型<select id="specAliasKind" class="select"><option value="color">颜色</option><option value="size">尺码</option></select></label>
+              <label>供应商写法<input id="specAliasInput" class="input" placeholder="例如：牛仔蓝 / 均码" /></label>
+              <label>绑定到标准值<select id="specAliasTarget" class="select"></select></label>
+              <label class="form-action-label"><button id="saveSpecAliasButton" class="btn primary" type="button">保存绑定</button></label>
+            </div>
+            <div id="specAliasSavedList" class="spec-alias-list"><div class="empty-row">暂无自定义绑定</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><div class="card-title">当前规则说明</div><span class="badge orange">上传前清洗</span></div>
+          <div class="card-body spec-rule-notes">
+            <div>颜色：优先匹配平台标准色，供应商英文色名和简写会转换为中文标准色。</div>
+            <div>尺码：当前类目按 <b>XS / S / M / L / XL / XXL</b> 上传，超大码统一收敛到 <b>XXL</b>。</div>
+            <div>自定义绑定：保存后会写入本地别名表，后续商品预检和上货清洗自动使用。</div>
           </div>
         </div>
       </section>
@@ -277,6 +405,16 @@
             <label>运行模式<select id="settingRunMode" class="select"><option value="headless">无头运行</option><option value="visible">显示浏览器</option></select></label>
             <label>最大重试次数<input id="settingMaxRetries" class="input" /></label>
             <label>图片上传模式<select id="settingUploadImageSource" class="select"><option value="">沿用旧脚本配置</option><option value="local">本地文件上传</option><option value="cos">COS 网络图上传</option></select></label>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><div class="card-title">AI 批量处理限速</div><span class="badge purple">标题任务</span></div>
+          <div class="card-body form-grid">
+            <label>标题请求间隔(秒)<input id="settingAiTitleRequestDelaySeconds" class="input" type="number" step="0.1" min="0" max="10" /></label>
+            <label>失败重试次数<input id="settingAiTitleMaxRetries" class="input" type="number" min="0" max="5" /></label>
+            <label>重试等待(秒)<input id="settingAiTitleRetryDelaySeconds" class="input" type="number" step="0.5" min="0" max="60" /></label>
+            <label>标题任务并发数<input id="settingAiTitleWorkerConcurrency" class="input" type="number" min="1" max="1" title="当前为稳定性固定串行，后续可扩展为多 worker" /></label>
           </div>
         </div>
 
@@ -362,7 +500,6 @@
     </div>
   </div>
   <div id="hoverImagePreview" class="hover-image-preview hidden"><img alt="图片预览" /></div>
-  <input id="collectionResultFileInput" type="file" accept=".csv,.xlsx,.xlsm,.json" style="display:none" />
   <div id="logModal" class="modal hidden">
     <div class="dialog">
       <div class="dialog-head"><h2>Run Log</h2><button type="button" id="closeLogModal" class="icon-btn">×</button></div>
@@ -377,6 +514,6 @@
     </div>
   </div>
   <button id="backToTopButton" class="back-to-top hidden" type="button" title="回到最上">↑</button>
-  <script src="/static/app.js?v=20260506-14"></script>
+  <script src="/static/app.js?v=20260511-freight"></script>
 </body>
 </html>
