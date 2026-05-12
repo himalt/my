@@ -3490,6 +3490,7 @@ def init_db() -> None:
             ("weight_g", "ALTER TABLE products ADD COLUMN weight_g INTEGER NOT NULL DEFAULT 0"),
             ("warehouse_fee", "ALTER TABLE products ADD COLUMN warehouse_fee REAL NOT NULL DEFAULT 15"),
             ("last_mile", "ALTER TABLE products ADD COLUMN last_mile REAL NOT NULL DEFAULT 0"),
+            ("processing_hidden", "ALTER TABLE products ADD COLUMN processing_hidden INTEGER NOT NULL DEFAULT 0"),
         ]:
             if column_name not in product_columns:
                 db.execute(ddl)
@@ -4067,7 +4068,7 @@ def image_identity_server(url: str) -> str:
 
 
 def normalize_color_alias(value: object) -> str:
-    return re.sub(r"[\s\-_【】\[\]（）(){}:：,，/\\|;；]+", "", str(value or "").strip().lower())
+    return re.sub(r"[\s\-_\[\](){}:\u003a\uff1a,\uff0c.\u3002/\\|;\uff1b\u3001]+", "", str(value or "").strip().lower())
 
 
 def load_spec_alias_map(kind: str) -> dict[str, str]:
@@ -4111,10 +4112,10 @@ def resolve_known_color(value: str) -> str:
 
 def clean_color_label(value: str) -> str:
     text = str(value or "").strip()
-    match = re.search(r"颜色[:：]([^;/\\|]+)", text)
+    match = re.search(r"(?:\u989c\u8272)[:\uff1a]([^;/\\|]+)", text)
     if match:
         text = match.group(1)
-    text = text.replace("（", "(").replace("）", ")").strip()
+    text = text.replace("\uff08", "(").replace("\uff09", ")").strip()
     return resolve_known_color(text)
 
 
@@ -6345,7 +6346,7 @@ def count_processing_products(keyword: str = "", status: str = "", exception_typ
 
 
 def processing_item_filter_sql(keyword: str = "", status: str = "", exception_type: str = "") -> tuple[list[str], list[object]]:
-    clauses: list[str] = []
+    clauses: list[str] = ["COALESCE(p.processing_hidden, 0) = 0"]
     params: list[object] = []
     clean_keyword = str(keyword or "").strip()
     if clean_keyword:
@@ -7653,6 +7654,35 @@ def retry_failed_processing_task(task_type: str, task_id: int) -> ProcessingTask
 @app.put("/api/processing-items/{product_id}", response_model=ProcessingItem)
 def update_processing_item(product_id: int, payload: ProcessingItemPayload) -> ProcessingItem:
     return save_processing_override(product_id, payload)
+
+
+@app.delete("/api/processing-items/{product_id}")
+def hide_processing_item(product_id: int) -> dict[str, bool]:
+    with connect() as db:
+        result = db.execute(
+            "UPDATE products SET processing_hidden = 1, updated_at = ? WHERE id = ?",
+            (now_text(), product_id),
+        )
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="商品不存在")
+    return {"ok": True}
+
+
+@app.post("/api/processing-items/bulk/hide")
+def hide_processing_items_bulk(payload: CollectionBulkPayload) -> dict[str, int]:
+    ids = [int(product_id) for product_id in payload.ids if int(product_id) > 0]
+    if not ids:
+        return {"hidden_count": 0}
+    hidden_count = 0
+    with connect() as db:
+        for id_batch in chunked_ids(ids):
+            placeholders = ",".join("?" for _ in id_batch)
+            result = db.execute(
+                f"UPDATE products SET processing_hidden = 1, updated_at = ? WHERE id IN ({placeholders})",
+                [now_text(), *id_batch],
+            )
+            hidden_count += result.rowcount
+    return {"hidden_count": hidden_count}
 
 
 @app.get("/api/collection-items", response_model=CollectionItemPage)

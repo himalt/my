@@ -40,6 +40,7 @@
         </div>
         <div class="actions toolbar">
           <button id="newProductButton" class="btn primary">＋ 新增商品</button>
+          <label class="btn outline-blue file-label">导入核价表<input id="quoteImportFile" type="file" accept=".xlsx,.xls,.csv,.txt" /></label>
           <button id="bulkProductStatusButton" class="btn ghost">批量改状态</button>
           <button id="bulkProductDeleteButton" class="btn outline-orange">批量删除</button>
           <button id="refreshButton" class="btn outline-blue">刷新</button>
@@ -188,7 +189,7 @@
               <option value="" selected>批量操作...</option>
               <option value="generate_titles">批量处理商品标题</option>
               <option value="dedupe_images">批量图片去重</option>
-              <option value="delete">批量删除</option>
+              <option value="delete">批量移出处理页</option>
             </select>
             <button id="refreshProcessingButton" class="btn outline-blue">刷新</button>
           </div>

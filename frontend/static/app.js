@@ -12,6 +12,7 @@ const productStatusFilter = document.querySelector('#productStatusFilter');
 const productImageFilter = document.querySelector('#productImageFilter');
 const searchButton = document.querySelector('#searchButton');
 const refreshButton = document.querySelector('#refreshButton');
+const quoteImportFile = document.querySelector('#quoteImportFile');
 const freightImportFile = document.querySelector('#freightImportFile');
 const saveFreightRulesButton = document.querySelector('#saveFreightRulesButton');
 const refreshFreightRulesButton = document.querySelector('#refreshFreightRulesButton');
@@ -162,6 +163,7 @@ let specMappingsLoaded = false;
 let specMappingColors = null;
 let specMappingSizes = null;
 let specAliasItems = [];
+let dynamicColorAliasMap = new Map();
 let specExceptionItems = [];
 let missingImageProducts = [];
 let operationLogs = [];
@@ -874,6 +876,9 @@ async function loadSpecMappings(force = false) {
     specMappingColors = colors;
     specMappingSizes = sizes;
     specAliasItems = aliases || [];
+    dynamicColorAliasMap = new Map(specAliasItems
+      .filter(item => item.kind === 'color' && item.alias && item.target)
+      .map(item => [normalizeColorToken(item.alias), item.target]));
     specExceptionItems = exceptions || [];
     renderSpecMappingSummary(colors, sizes);
     renderSpecColorGroups(colors);
@@ -1333,19 +1338,16 @@ function renderProducts() {
         <td>${product.sku_summary || '-'}</td>
         <td>${product.main_image ? `<div class="thumb"><img src="${product.main_image}" alt="${product.title}"></div>` : '<span class="badge red">缺主图</span>'}</td>
         <td>${money(product.purchase_price)}</td>
+        <td>${money(product.platform_quote_price)}</td>
+        <td>${Number(product.weight_g || 0)}g</td>
         <td>${money(product.first_mile)}</td>
+        <td>${money(product.last_mile)}</td>
+        <td>${money(product.warehouse_fee)}</td>
         <td>${money(product.platform_cost)}</td>
         <td>${money(product.total_cost)}</td>
         <td>${money(product.estimated_profit)}</td>
         <td><span class="badge ${product.gross_margin >= 38 ? 'green' : 'orange'}">${Number(product.gross_margin).toFixed(1)}%</span></td>
         <td><span class="badge ${statusClass(statusText)}">${statusText}</span></td>
-        <td class="actions">
-          <button class="btn ghost" data-edit="${product.id}">编辑</button>
-          <label class="btn outline-blue file-label">主图<input type="file" accept="image/*" data-image="${product.id}" /></label>
-          <button class="btn outline-blue" data-process-image="${product.id}">处理图</button>
-          <button class="btn outline-blue" data-refresh-image="${product.id}">查图</button>
-          <button class="btn outline-orange" data-delete="${product.id}">删除</button>
-        </td>
       </tr>
     `;
   }).join('');
@@ -1557,7 +1559,7 @@ function renderProcessingItems() {
     return `
       <button class="processing-card ${cardClass} ${item.product_id === selectedProcessingProductId ? 'active' : ''}" data-processing-select="${item.product_id}">
         <input class="processing-select" type="checkbox" data-processing-check="${item.product_id}" ${checked} aria-label="选择商品 ${item.skc}">
-        <span class="processing-card-delete" title="删除待处理商品" data-processing-delete="${item.product_id}">×</span>
+        <span class="processing-card-delete" title="移出商品处理页（商品库保留）" data-processing-delete="${item.product_id}">×</span>
         <div>${preview ? `<img src="${preview}" alt="${item.skc}" loading="lazy" referrerpolicy="no-referrer">` : '<span>无图</span>'}</div>
         <section>
           <strong>${item.skc}</strong>
@@ -3001,15 +3003,27 @@ function colorEnglishLabel(value) {
 function normalizeKnownColor(value) {
   const text = String(value || '').trim();
   if (!text) return '';
-  const direct = COLOR_ALIAS_MAP.get(normalizeColorToken(text));
-  if (direct) return direct;
+  const normalizedText = normalizeColorToken(text);
+  const aliasMaps = [dynamicColorAliasMap, COLOR_ALIAS_MAP];
+
+  for (const aliasMap of aliasMaps) {
+    const direct = aliasMap.get(normalizedText);
+    if (direct) return direct;
+  }
+
   const candidates = text.split(/[\r\n,，、/]+/).map(part => part.trim()).filter(Boolean);
   for (const candidate of candidates) {
-    const color = COLOR_ALIAS_MAP.get(normalizeColorToken(candidate));
-    if (color) return color;
+    const normalizedCandidate = normalizeColorToken(candidate);
+    for (const aliasMap of aliasMaps) {
+      const color = aliasMap.get(normalizedCandidate);
+      if (color) return color;
+    }
   }
-  for (const [alias, color] of COLOR_ALIAS_MAP.entries()) {
-    if (alias && normalizeColorToken(text).includes(alias)) return color;
+
+  for (const aliasMap of aliasMaps) {
+    for (const [alias, color] of aliasMap.entries()) {
+      if (alias && normalizedText.includes(alias)) return color;
+    }
   }
   return '';
 }
@@ -3545,6 +3559,7 @@ async function loadProcessingItems(options = {}) {
     refreshProcessingButton.textContent = '刷新中...';
   }
   try {
+    if (!specMappingsLoaded) await loadSpecMappings();
     try {
       await syncProcessingExceptionState();
     } catch (preflightError) {
@@ -3588,6 +3603,18 @@ async function loadProcessingItems(options = {}) {
       refreshProcessingButton.textContent = originalText || '刷新';
     }
   }
+}
+
+
+async function importQuoteFile(file) {
+  if (!file) return;
+  const data = new FormData();
+  data.append('file', file);
+  const response = await fetch('/api/products/quotes/import-file', { method: 'POST', body: data });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.detail || '导入核价表失败');
+  await loadProducts();
+  await notify(`核价表已导入\n更新 ${result.updated_count || 0} 条\n未匹配 ${result.unmatched_count || 0} 条\n无效 ${result.invalid_count || 0} 条`);
 }
 
 
@@ -4362,11 +4389,11 @@ processingDetailPanel?.addEventListener('drop', event => {
 
 async function deleteProcessingProduct(productId) {
   const item = processingItems.find(current => current.product_id === Number(productId));
-  if (!await askConfirm(`确认删除商品 ${item?.skc || productId} 吗？商品库记录和对应主图都会删除。`)) return;
-  const response = await fetch(`/api/products/${productId}`, { method: 'DELETE' });
+  if (!await askConfirm(`确认把商品 ${item?.skc || productId} 移出商品处理页吗？商品库/利润数据会保留。`)) return;
+  const response = await fetch(`/api/processing-items/${productId}`, { method: 'DELETE' });
   if (!response.ok) {
     const error = await response.json();
-    await notify(error.detail || '删除商品失败');
+    await notify(error.detail || '移出商品处理页失败');
     return;
   }
   selectedProcessingIds.delete(Number(productId));
@@ -4377,24 +4404,25 @@ async function deleteProcessingProduct(productId) {
 async function deleteSelectedProcessingProducts() {
   const ids = selectedProcessingProductIds();
   if (!ids.length) {
-    await notify('请先勾选要删除的处理商品');
+    await notify('请先勾选要移出的处理商品');
     return;
   }
-  if (!await askConfirm(`确认删除选中的 ${ids.length} 个商品吗？商品库记录和对应主图都会删除。`)) return;
-  const response = await fetch('/api/products/bulk/delete', {
+  if (!await askConfirm(`确认把选中的 ${ids.length} 个商品移出商品处理页吗？商品库/利润数据会保留。`)) return;
+  const response = await fetch('/api/processing-items/bulk/hide', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ids }),
   });
   if (!response.ok) {
     const error = await response.json();
-    await notify(error.detail || '批量删除处理商品失败');
+    await notify(error.detail || '批量移出商品处理页失败');
     return;
   }
+  const result = await response.json();
   selectedProcessingIds.clear();
   selectedProcessingProductId = null;
   await refreshOperationalViews();
-  await notify(`已删除 ${ids.length} 个商品`);
+  await notify(`已移出 ${result.hidden_count || ids.length} 个商品，商品库/利润数据已保留`);
 }
 
 async function dedupeSelectedProcessingImages() {
@@ -4786,6 +4814,16 @@ if (refreshSystemStatusButton) refreshSystemStatusButton.addEventListener('click
 if (cleanupTestDataButton) cleanupTestDataButton.addEventListener('click', cleanupTestData);
 if (newPromptButton) newPromptButton.addEventListener('click', createPrompt);
 newProductButton.addEventListener('click', () => openForm());
+
+quoteImportFile?.addEventListener('change', async event => {
+  try {
+    await importQuoteFile(event.target.files?.[0]);
+  } catch (error) {
+    await notify(error.message || '导入核价表失败');
+  } finally {
+    event.target.value = '';
+  }
+});
 
 freightImportFile?.addEventListener('change', async event => {
   try {
