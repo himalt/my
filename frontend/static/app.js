@@ -760,7 +760,7 @@ function renderSpecColorGroups(data) {
 
 function renderSpecSizes(data) {
   if (specSizeChips) {
-    const sizes = data.sizes || [];
+    const sizes = sortUploadSizes(data.sizes || []);
     specSizeChips.innerHTML = sizes.length ? sizes.map(size => `<span class="size-chip supported">${size}</span>`).join('') : '<div class="empty-row">暂无尺码标准表</div>';
   }
   if (specSizeAliasList) {
@@ -776,7 +776,7 @@ function renderSpecSizes(data) {
 function renderSpecAliasTargets() {
   if (!specAliasTarget) return;
   const kind = specAliasKind?.value || 'color';
-  const options = kind === 'size' ? (specMappingSizes?.sizes || []) : (specMappingColors?.standard_colors || []);
+  const options = kind === 'size' ? sortUploadSizes(specMappingSizes?.sizes || []) : (specMappingColors?.standard_colors || []);
   specAliasTarget.innerHTML = options.map(option => `<option value="${option}">${option}</option>`).join('');
 }
 
@@ -793,7 +793,7 @@ function renderSpecAliasSavedList() {
 }
 
 function specTargetOptions(kind) {
-  const options = kind === 'size' ? (specMappingSizes?.sizes || []) : (specMappingColors?.standard_colors || []);
+  const options = kind === 'size' ? sortUploadSizes(specMappingSizes?.sizes || []) : (specMappingColors?.standard_colors || []);
   return options.map(option => `<option value="${option}">${option}</option>`).join('');
 }
 
@@ -1441,13 +1441,7 @@ function visibleProcessingItems() {
 }
 
 function pagedProcessingItems() {
-  const items = filteredProcessingItems();
-  processingPagination.total = items.length;
-  processingPagination.page_size = Number(processingPageSize?.value || processingPagination.page_size || 50);
-  processingPagination.total_pages = Math.max(1, Math.ceil(items.length / processingPagination.page_size));
-  processingPagination.page = Math.min(Math.max(1, processingPagination.page || 1), processingPagination.total_pages);
-  const start = (processingPagination.page - 1) * processingPagination.page_size;
-  return items.slice(start, start + processingPagination.page_size);
+  return filteredProcessingItems();
 }
 
 function selectedProcessingProductIds() {
@@ -3021,6 +3015,7 @@ function normalizeKnownColor(value) {
 }
 
 const STANDARD_UPLOAD_SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL'];
+const STANDARD_UPLOAD_SIZE_RANK = new Map(STANDARD_UPLOAD_SIZES.map((size, index) => [size, index]));
 const SIZE_ALIAS_MAP = new Map([
   ['XS', 'XS'], ['S', 'S'], ['M', 'M'], ['L', 'L'], ['XL', 'XL'], ['XXL', 'XXL'],
   ['2XL', 'XXL'], ['XXXL', 'XXL'], ['3XL', 'XXL'], ['4XL', 'XXL'],
@@ -3034,6 +3029,17 @@ function normalizeUploadSize(value) {
   if (!match) return text;
   const size = match[2] || match[1];
   return SIZE_ALIAS_MAP.get(size) || size;
+}
+
+function sortUploadSizes(sizes) {
+  return uniqueList(sizes).sort((left, right) => {
+    const leftSize = normalizeUploadSize(left);
+    const rightSize = normalizeUploadSize(right);
+    const leftRank = STANDARD_UPLOAD_SIZE_RANK.has(leftSize) ? STANDARD_UPLOAD_SIZE_RANK.get(leftSize) : STANDARD_UPLOAD_SIZES.length;
+    const rightRank = STANDARD_UPLOAD_SIZE_RANK.has(rightSize) ? STANDARD_UPLOAD_SIZE_RANK.get(rightSize) : STANDARD_UPLOAD_SIZES.length;
+    if (leftRank !== rightRank) return leftRank - rightRank;
+    return String(left).localeCompare(String(right), 'zh-Hans-CN', { numeric: true });
+  });
 }
 
 function cleanSpecLabel(value, type) {
@@ -3154,10 +3160,10 @@ function buildVariantMatrix(item, imageOptions) {
   const colorEntries = Array.from(colorMap.values()).map(entry => ({
     color: entry.color,
     images: entry.images,
-    sizes: Array.from(entry.sizes),
+    sizes: sortUploadSizes(Array.from(entry.sizes)),
     skuIds: Array.from(entry.skuIds),
   }));
-  const allSizes = uniqueList([...globalSizes, ...colorEntries.flatMap(entry => entry.sizes)]);
+  const allSizes = sortUploadSizes([...globalSizes, ...colorEntries.flatMap(entry => entry.sizes)]);
   const rows = colorEntries.flatMap(entry => {
     const sizes = allSizes.length ? allSizes : (entry.sizes.length ? entry.sizes : ['待识别']);
     return sizes.map(size => ({ color: entry.color, size, image: entry.images[0] || null }));
@@ -3515,14 +3521,19 @@ async function refreshProcessingItem(productId) {
   if (index >= 0) processingItems[index] = updated;
   else processingItems.unshift(updated);
   try {
-    processingPreflightSummary = await fetchJson('/api/processing-items/preflight', { method: 'POST' });
-    const exceptions = await fetchJson('/api/processing-items/exceptions?status=open');
-    processingExceptionIds = new Set((exceptions || []).map(item => Number(item.product_id)));
-    processingExceptionMap = new Map((exceptions || []).map(item => [Number(item.product_id), item]));
+    await syncProcessingExceptionState();
   } catch (error) {
     console.warn('processing item preflight refresh failed', error);
   }
   renderProcessingItems();
+}
+
+async function syncProcessingExceptionState() {
+  processingPreflightSummary = await fetchJson('/api/processing-items/preflight', { method: 'POST' });
+  const exceptions = await fetchJson('/api/processing-items/exceptions?status=open');
+  processingExceptionIds = new Set((exceptions || []).map(item => Number(item.product_id)));
+  processingExceptionMap = new Map((exceptions || []).map(item => [Number(item.product_id), item]));
+  return processingPreflightSummary;
 }
 
 async function loadProcessingItems(options = {}) {
@@ -3534,20 +3545,40 @@ async function loadProcessingItems(options = {}) {
     refreshProcessingButton.textContent = '刷新中...';
   }
   try {
-    processingItems = await fetchJson('/api/processing-items');
     try {
-      processingPreflightSummary = await fetchJson('/api/processing-items/preflight', { method: 'POST' });
-      const exceptions = await fetchJson('/api/processing-items/exceptions?status=open');
-      processingExceptionIds = new Set((exceptions || []).map(item => Number(item.product_id)));
-      processingExceptionMap = new Map((exceptions || []).map(item => [Number(item.product_id), item]));
-      if (showFeedback && processingPreflightSummary) {
-        addOperationLog('处理预检', processingPreflightSummary.blocked_count ? 'error' : 'success', `可处理 ${processingPreflightSummary.ready_count || 0} 个，异常 ${processingPreflightSummary.blocked_count || 0} 个，预警 ${Object.keys(processingPreflightSummary.warning_counts || {}).length} 类`, 35);
-      }
+      await syncProcessingExceptionState();
     } catch (preflightError) {
       console.warn('processing preflight failed', preflightError);
     }
+    processingPagination.page_size = Number(processingPageSize?.value || processingPagination.page_size || 50);
+    const params = new URLSearchParams({
+      page: String(processingPagination.page || 1),
+      page_size: String(processingPagination.page_size),
+    });
+    const keyword = String(processingSearchInput?.value || '').trim();
+    const statusFilter = processingStatusFilter?.value || '';
+    const exceptionType = processingExceptionTypeFilter?.value || '';
+    if (keyword) params.set('q', keyword);
+    if (statusFilter) params.set('status', statusFilter);
+    if (exceptionType) params.set('exception_type', exceptionType);
+    const pageData = await fetchJson(`/api/processing-items?${params.toString()}`);
+    if (Array.isArray(pageData)) {
+      processingItems = pageData;
+      processingPagination.total = processingItems.length;
+      processingPagination.page = 1;
+      processingPagination.total_pages = 1;
+    } else {
+      processingItems = pageData.items || [];
+      processingPagination.total = Number(pageData.total || processingItems.length || 0);
+      processingPagination.page = Number(pageData.page || processingPagination.page || 1);
+      processingPagination.page_size = Number(pageData.page_size || processingPagination.page_size || 50);
+      processingPagination.total_pages = Number(pageData.total_pages || 1);
+    }
+    if (showFeedback && processingPreflightSummary) {
+      addOperationLog('处理预检', processingPreflightSummary.blocked_count ? 'error' : 'success', `可处理 ${processingPreflightSummary.ready_count || 0} 个，异常 ${processingPreflightSummary.blocked_count || 0} 个，预警 ${Object.keys(processingPreflightSummary.warning_counts || {}).length} 类`, 35);
+    }
     renderProcessingItems();
-    if (showFeedback) await notify(`商品处理已刷新，共 ${processingItems.length} 条`);
+    if (showFeedback) await notify(`商品处理已刷新，共 ${processingPagination.total || processingItems.length} 条`);
   } catch (error) {
     if (showFeedback) await notify(`刷新失败：${error.message || error}`);
     else throw error;
@@ -4438,6 +4469,20 @@ async function autoAssignColorImages(productId, count, useVision = false) {
   await refreshProcessingItem(productId);
 }
 
+function updateProcessingItemInMemory(productId, patch) {
+  const id = Number(productId);
+  const index = processingItems.findIndex(item => Number(item.product_id) === id);
+  if (index < 0) return null;
+  processingItems[index] = { ...processingItems[index], ...patch };
+  return processingItems[index];
+}
+
+function renderUpdatedProcessingItem(productId) {
+  renderProcessingItems();
+  const item = processingItems.find(current => Number(current.product_id) === Number(productId));
+  if (item && Number(selectedProcessingProductId) === Number(productId)) renderProcessingDetail(item);
+}
+
 async function detailImageAssignmentRequest(response, fallbackMessage, productId) {
   if (!response.ok) {
     const text = await response.text();
@@ -4451,7 +4496,9 @@ async function detailImageAssignmentRequest(response, fallbackMessage, productId
     await notify(message);
     return false;
   }
-  await refreshProcessingItem(productId);
+  const assignments = await response.json();
+  updateProcessingItemInMemory(productId, { detail_image_assignments: assignments || [] });
+  renderUpdatedProcessingItem(productId);
   return true;
 }
 
@@ -4501,7 +4548,9 @@ async function saveManualColorImageAssignment(productId, color, slotIndex, image
     await notify(error.detail || '保存颜色图片失败');
     return;
   }
-  await refreshProcessingItem(productId);
+  const assignments = await response.json();
+  updateProcessingItemInMemory(productId, { color_image_assignments: assignments || [] });
+  renderUpdatedProcessingItem(productId);
 }
 
 async function generateTitleForProduct(productId, options = {}) {
@@ -4664,7 +4713,7 @@ if (selectAllProducts) {
 if (refreshProcessingButton) refreshProcessingButton.addEventListener('click', () => loadProcessingItems({ feedback: true }));
 function resetProcessingPageAndRender() {
   processingPagination.page = 1;
-  renderProcessingItems();
+  loadProcessingItems();
 }
 processingStatusFilter?.addEventListener('change', resetProcessingPageAndRender);
 processingSearchInput?.addEventListener('input', resetProcessingPageAndRender);
@@ -4674,12 +4723,12 @@ processingPageSize?.addEventListener('change', resetProcessingPageAndRender);
 processingPrevPage?.addEventListener('click', () => {
   if (processingPagination.page <= 1) return;
   processingPagination.page -= 1;
-  renderProcessingItems();
+  loadProcessingItems();
 });
 processingNextPage?.addEventListener('click', () => {
   if (processingPagination.page >= processingPagination.total_pages) return;
   processingPagination.page += 1;
-  renderProcessingItems();
+  loadProcessingItems();
 });
 processingTaskCenterBody?.addEventListener('click', event => {
   const retryButton = event.target.closest('[data-processing-task-retry]');

@@ -589,6 +589,14 @@ class ProcessingItem(BaseModel):
     status: str
 
 
+class ProcessingItemPage(BaseModel):
+    items: list[ProcessingItem]
+    total: int = 0
+    page: int = 1
+    page_size: int = 50
+    total_pages: int = 1
+
+
 class ProcessingItemPayload(BaseModel):
     english_title: str = ""
     color: str = ""
@@ -1066,6 +1074,30 @@ def product_from_row(row: sqlite3.Row) -> Product:
     data.setdefault("weight_g", 0)
     data.setdefault("warehouse_fee", 15)
     data.setdefault("last_mile", data.get("platform_cost", 0))
+    main_image = str(data.get("main_image") or "").strip()
+    if main_image.startswith("/images/"):
+        local_path = IMAGE_DIR / main_image.removeprefix("/images/")
+        if not local_path.exists():
+            with connect() as image_db:
+                fallback = image_db.execute(
+                    """
+                    SELECT image_url FROM product_color_image_assignments
+                    WHERE product_id = ? AND image_url != ''
+                    ORDER BY sort_order, id LIMIT 1
+                    """,
+                    (data["id"],),
+                ).fetchone()
+                if not fallback:
+                    fallback = image_db.execute(
+                        """
+                        SELECT image_url FROM product_sku_images
+                        WHERE product_id = ? AND image_url != ''
+                        ORDER BY sort_order, id LIMIT 1
+                        """,
+                        (data["id"],),
+                    ).fetchone()
+            if fallback:
+                data["main_image"] = fallback["image_url"]
     if float(data.get("platform_quote_price") or 0) <= 0:
         data["estimated_profit"] = 0
         data["gross_margin"] = 0
@@ -3448,6 +3480,10 @@ def init_db() -> None:
         db.execute("CREATE INDEX IF NOT EXISTS idx_processing_title_tasks_status_id ON processing_title_tasks(status, id ASC)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_processing_exceptions_status ON processing_exceptions(status, updated_at DESC)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_processing_field_tasks_status_id ON processing_field_tasks(status, id ASC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_product_sku_images_product_order ON product_sku_images(product_id, sort_order, id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_product_sku_images_product_url ON product_sku_images(product_id, image_url)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_product_color_assignments_product_order ON product_color_image_assignments(product_id, color, sort_order, id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_product_color_assignments_product_url ON product_color_image_assignments(product_id, image_url)")
         product_columns = [row[1] for row in db.execute("PRAGMA table_info(products)").fetchall()]
         for column_name, ddl in [
             ("platform_quote_price", "ALTER TABLE products ADD COLUMN platform_quote_price REAL NOT NULL DEFAULT 0"),
@@ -6191,10 +6227,22 @@ def publish_record_from_row(row: sqlite3.Row) -> PublishRecord:
     return PublishRecord(**dict(row))
 
 
-def build_processing_items() -> list[ProcessingItem]:
+def build_processing_items(
+    limit: int | None = None,
+    offset: int = 0,
+    keyword: str = "",
+    status: str = "",
+    exception_type: str = "",
+) -> list[ProcessingItem]:
+    clauses, params = processing_item_filter_sql(keyword, status, exception_type)
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    limit_sql = ""
+    if limit is not None:
+        limit_sql = " LIMIT ? OFFSET ?"
+        params.extend([max(1, int(limit)), max(0, int(offset or 0))])
     with connect() as db:
         rows = db.execute(
-            """
+            f"""
             SELECT p.*, o.english_title AS override_english_title, o.color AS override_color,
                    o.size AS override_size, o.sku_code AS override_sku_code,
                    o.declared_price AS override_declared_price, o.weight_g AS override_weight_g,
@@ -6205,8 +6253,11 @@ def build_processing_items() -> list[ProcessingItem]:
             FROM products p
             LEFT JOIN processing_overrides o ON o.product_id = p.id
             LEFT JOIN product_detail_snapshots d ON d.product_id = p.id
+            {where_sql}
             ORDER BY p.id DESC
-            """
+            {limit_sql}
+            """,
+            params,
         ).fetchall()
     items: list[ProcessingItem] = []
     for row in rows:
@@ -6276,6 +6327,65 @@ def build_processing_items() -> list[ProcessingItem]:
             )
         )
     return items
+
+
+def count_processing_products(keyword: str = "", status: str = "", exception_type: str = "") -> int:
+    clauses, params = processing_item_filter_sql(keyword, status, exception_type)
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with connect() as db:
+        return int(db.execute(
+            f"""
+            SELECT COUNT(*) AS total
+            FROM products p
+            LEFT JOIN processing_overrides o ON o.product_id = p.id
+            {where_sql}
+            """,
+            params,
+        ).fetchone()["total"])
+
+
+def processing_item_filter_sql(keyword: str = "", status: str = "", exception_type: str = "") -> tuple[list[str], list[object]]:
+    clauses: list[str] = []
+    params: list[object] = []
+    clean_keyword = str(keyword or "").strip()
+    if clean_keyword:
+        clauses.append(
+            """
+            (p.title LIKE ? OR p.skc LIKE ? OR p.sku_summary LIKE ? OR
+             o.english_title LIKE ? OR o.color LIKE ? OR o.size LIKE ? OR
+             o.sku_code LIKE ? OR o.source_url LIKE ?)
+            """
+        )
+        like_keyword = f"%{clean_keyword}%"
+        params.extend([like_keyword] * 8)
+    clean_status = str(status or "").strip()
+    if clean_status == "ready_to_export":
+        clauses.append("NULLIF(TRIM(COALESCE(p.main_image, '')), '') IS NOT NULL")
+    elif clean_status == "needs_image":
+        clauses.append("NULLIF(TRIM(COALESCE(p.main_image, '')), '') IS NULL")
+    elif clean_status == "exception_pool":
+        clauses.append("EXISTS (SELECT 1 FROM processing_exceptions pe WHERE pe.product_id = p.id AND pe.status = 'open')")
+    elif clean_status:
+        clauses.append("p.status = ?")
+        params.append(clean_status)
+    exception_patterns = {
+        "title": ["标题", "SKU Code"],
+        "spec": ["颜色", "尺码", "标准色"],
+        "image": ["主图", "颜色图", "图片"],
+        "field": ["申报价", "重量", "尺寸", "库存", "发货"],
+        "link": ["链接"],
+    }.get(str(exception_type or "").strip(), [])
+    if exception_patterns:
+        exception_text_sql = "COALESCE(pe.issues_json, '') || COALESCE(pe.warnings_json, '') || COALESCE(pe.note, '')"
+        clauses.append(
+            "EXISTS ("
+            "SELECT 1 FROM processing_exceptions pe "
+            "WHERE pe.product_id = p.id AND pe.status = 'open' AND "
+            f"({' OR '.join([exception_text_sql + ' LIKE ?' for _ in exception_patterns])})"
+            ")"
+        )
+        params.extend([f"%{pattern}%" for pattern in exception_patterns])
+    return clauses, params
 
 
 def get_processing_item(product_id: int) -> ProcessingItem:
@@ -7203,9 +7313,15 @@ def list_publish_records(result: str = "", q: str = "") -> list[PublishRecord]:
     return [publish_record_from_row(row) for row in rows]
 
 
-@app.get("/api/processing-items", response_model=list[ProcessingItem])
-def list_processing_items() -> list[ProcessingItem]:
-    return build_processing_items()
+@app.get("/api/processing-items", response_model=ProcessingItemPage)
+def list_processing_items(page: int = 1, page_size: int = 50, q: str = "", status: str = "", exception_type: str = "") -> ProcessingItemPage:
+    safe_page_size = max(10, min(int(page_size or 50), 200))
+    total = count_processing_products(q, status, exception_type)
+    total_pages = max(1, (total + safe_page_size - 1) // safe_page_size)
+    safe_page = min(max(1, int(page or 1)), total_pages)
+    offset = (safe_page - 1) * safe_page_size
+    items = build_processing_items(limit=safe_page_size, offset=offset, keyword=q, status=status, exception_type=exception_type)
+    return ProcessingItemPage(items=items, total=total, page=safe_page, page_size=safe_page_size, total_pages=total_pages)
 
 
 @app.get("/api/processing-items/by-id/{product_id}", response_model=ProcessingItem)
